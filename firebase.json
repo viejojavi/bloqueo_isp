@@ -1,0 +1,6 @@
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "database": "ai-studio-portaldebloqueol-6eb3f2db-9fc4-40e2-a3c2-71bf279df83a"
+  }
+}

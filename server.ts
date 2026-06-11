@@ -246,6 +246,29 @@ async function startServer() {
 
   app.use(express.json({ limit: '10mb' }));
 
+  // CORS middleware for Vercel and local development
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin) {
+      if (
+        origin.endsWith(".vercel.app") ||
+        origin === "https://vercel.com" ||
+        origin.startsWith("http://localhost:") ||
+        origin.startsWith("https://localhost:") ||
+        origin.includes("127.0.0.1")
+      ) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
+        res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+      }
+    }
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
   // API to detect ISP
   app.get("/api/detect-isp", async (req, res) => {
     let clientIpStr = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "";
@@ -265,7 +288,7 @@ async function startServer() {
 
       const ispDatabase = await getIsps();
       
-      let addr: ipaddr.IP | null = null;
+      let addr: any = null;
       try {
         addr = ipaddr.parse(clientIpStr);
       } catch (e) {
