@@ -1,0 +1,52 @@
+{
+  "adminConfig": {
+    "email": "oscarj.castillo@hotmail.com",
+    "password": "admin123"
+  },
+  "ispDatabase": [
+    {
+      "id": "1",
+      "name": "Claro Colombia",
+      "logo": "https://upload.wikimedia.org/wikipedia/commons/4/4c/Claro.svg",
+      "ips": [
+        "190.157.0.0/16",
+        "186.28.0.0/16",
+        "186.29.0.0/16",
+        "2800:480::/32"
+      ]
+    },
+    {
+      "id": "2",
+      "name": "Movistar Colombia",
+      "logo": "https://upload.wikimedia.org/wikipedia/commons/a/a9/Movistar_logo.svg",
+      "ips": [
+        "190.156.0.0/16",
+        "181.137.0.0/16",
+        "200.75.0.0/16",
+        "2800:af::/32"
+      ]
+    },
+    {
+      "id": "3",
+      "name": "Tigo Colombia",
+      "logo": "https://upload.wikimedia.org/wikipedia/commons/3/36/Logo_Tigo.svg",
+      "ips": [
+        "181.134.0.0/16",
+        "181.133.0.0/16",
+        "181.129.0.0/16",
+        "2800:1e0::/32"
+      ]
+    },
+    {
+      "id": "4",
+      "name": "ETB",
+      "logo": "https://upload.wikimedia.org/wikipedia/commons/9/9c/Logo_etb.svg",
+      "ips": [
+        "181.135.0.0/16",
+        "181.56.0.0/16",
+        "200.21.0.0/16",
+        "2800:40::/32"
+      ]
+    }
+  ]
+}

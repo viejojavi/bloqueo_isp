@@ -1,0 +1,6 @@
+{
+  "name": "Portal de Bloqueo Ley 679 de 2001",
+  "description": "Sistema de aviso legal y protección de menores conforme a la legislación colombiana, con detección dinámica de ISP.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

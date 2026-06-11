@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "ISP": {
+      "title": "ISP Configuration",
+      "description": "Configuration details for an Internet Service Provider.",
+      "type": "object",
+      "properties": {
+        "asn": { "type": "string", "description": "Autonomous System Number" },
+        "name": { "type": "string", "description": "Company name" },
+        "logo": { "type": "string", "description": "Data URL or URL of the logo" },
+        "ips": { 
+          "type": "array", 
+          "items": { "type": "string" },
+          "description": "List of IP prefixes or CIDR ranges"
+        },
+        "isDefault": { "type": "boolean" },
+        "activationType": { "type": "string", "enum": ["default", "indefinite", "monthly"] },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "logo", "ips", "activationType", "status"]
+    },
+    "SystemConfig": {
+      "title": "Global System Configuration",
+      "description": "Global settings for the portal identity and protected documents.",
+      "type": "object",
+      "properties": {
+        "defaultName": { "type": "string" },
+        "defaultLogo": { "type": "string" },
+        "protectedFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" }
+            },
+            "required": ["id", "title"]
+          }
+        }
+      },
+      "required": ["defaultName", "defaultLogo", "protectedFiles"]
+    },
+    "ProtectedFile": {
+      "title": "Protected File Metadata",
+      "description": "Metadata for a protected file.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" }
+      },
+      "required": ["id", "title"]
+    },
+    "Line": {
+      "title": "Text Line",
+      "description": "An individual line in a protected file.",
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "order": { "type": "number" }
+      },
+      "required": ["text", "order"]
+    }
+  },
+  "firestore": {
+    "/isps/{ispId}": {
+      "schema": "ISP",
+      "description": "Collection of all configured Internet Service Providers."
+    },
+    "/settings/global": {
+      "schema": "SystemConfig",
+      "description": "Single document containing global portal settings."
+    },
+    "/protectedFiles/{fileId}": {
+      "schema": "ProtectedFile",
+      "description": "Metadata for protected files."
+    },
+    "/protectedFiles/{fileId}/lines/{lineId}": {
+      "schema": "Line",
+      "description": "Individual lines of content for a protected file."
+    }
+  }
+}

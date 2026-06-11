@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /test/connection {
+        allow read, write: if true;
+    }
+    
+    match /isps/{ispId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    match /settings/global {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+    
+    match /protectedFiles/{fileId} {
+        allow read: if true;
+        allow write: if request.auth != null;                
+        match /lines/{lineId} {
+            allow read: if true;
+            allow write: if request.auth != null;
+        }
+    }
+    
+    // Safety net for legacy code references
+    match /protectedFilesReferences/{fileId} {
+        allow read: if true;
+        allow write: if request.auth != null;
+    }
+    
+    match /admins/{adminId} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+  }
+}
