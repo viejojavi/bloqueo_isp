@@ -8,65 +8,78 @@ import fs from "fs";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 
-const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+// Firebase configurations
+let firebaseConfig: any = { projectId: process.env.FIREBASE_PROJECT_ID || "static-fallback" };
+
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(configPath)) {
+    firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  }
+} catch (e) {
+  console.warn("[Firebase] Could not load firebase-applet-config.json, using defaults.", e);
+}
 
 const DB_PATH = path.join(process.cwd(), "db.json");
 
+// Helper for safe DB persistence (disabled on Vercel)
+function safeWriteDB(data: any) {
+  if (process.env.VERCEL || process.env.NOW_REGION) {
+    return; // Read-only on Vercel
+  }
+  try {
+    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.warn("[FS] Could not persist to db.json:", e);
+  }
+}
+
 // Firebase Admin initialization
-let adminApp: admin.app.App;
+let adminApp: admin.app.App | null = null;
 
 function tryInitializeAdmin() {
   const serviceAccountKeyJson = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT)?.trim();
   const privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
 
+  // Helper to get or create app
+  const getOrCreateApp = (options: admin.AppOptions, name: string) => {
+    const existing = admin.apps.find(a => a?.name === name);
+    if (existing) return existing;
+    return admin.initializeApp(options, name);
+  };
+
   if (serviceAccountKeyJson) {
     try {
-      // Robust cleaning for common pasting issues
-      let cleanedJson = serviceAccountKeyJson
-        .replace(/[\u200B-\u200D\uFEFF]/g, '') // Hidden chars
-        .trim();
+      let cleanedJson = serviceAccountKeyJson.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
       
-      // If it's wrapped in extra quotes from some copy-paste operations
-      if (cleanedJson.startsWith('"') && cleanedJson.endsWith('"') && cleanedJson.includes('\\"')) {
-        try {
-          cleanedJson = JSON.parse(cleanedJson);
-        } catch (e) { /* ignore and use as is */ }
+      if (cleanedJson.startsWith('"') && cleanedJson.endsWith('"')) {
+        try { cleanedJson = JSON.parse(cleanedJson); } catch (e) {}
       }
 
       const sa = JSON.parse(cleanedJson);
-      
-      // Healing private key inside JSON
-      if (sa.private_key && typeof sa.private_key === 'string') {
-        sa.private_key = sa.private_key.replace(/\\n/g, '\n');
-      }
+      if (sa.private_key) sa.private_key = sa.private_key.replace(/\\n/g, '\n');
 
-      adminApp = admin.initializeApp({
+      adminApp = getOrCreateApp({
         credential: admin.credential.cert(sa),
         projectId: sa.project_id || firebaseConfig.projectId
       }, "init-sa");
-      console.log(`[Firebase] Initialized with Service Account JSON for project: ${sa.project_id}`);
+      console.log(`[Firebase] Initialized with SA JSON for: ${sa.project_id}`);
       return;
     } catch (err: any) {
-      console.error("[Firebase] Fatal error parsing FIREBASE_SERVICE_ACCOUNT_KEY:", err.message);
+      console.error("[Firebase] SA JSON Parse Error:", err.message);
     }
   }
 
   if (!adminApp && privateKey && clientEmail) {
     try {
-      let formattedKey = privateKey.trim();
-      formattedKey = formattedKey.replace(/\\n/g, '\n');
-      formattedKey = formattedKey.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-
+      let formattedKey = privateKey.trim().replace(/\\n/g, '\n').replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
       if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
         const cleaned = formattedKey.replace(/\s+/g, '');
-        if (cleaned.length > 500) {
-          formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
-        }
+        if (cleaned.length > 500) formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
       }
 
-      adminApp = admin.initializeApp({
+      adminApp = getOrCreateApp({
         credential: admin.credential.cert({
           projectId: firebaseConfig.projectId,
           clientEmail: clientEmail,
@@ -74,21 +87,21 @@ function tryInitializeAdmin() {
         }),
         projectId: firebaseConfig.projectId
       }, "init-env");
-      console.log("[Firebase] Initialized with individual Private Key and Client Email.");
+      console.log("[Firebase] Initialized with Private Key env vars.");
       return;
     } catch (err: any) {
-      console.error(`[Firebase] Error with individual env vars: ${err.message}`);
+      console.error(`[Firebase] Env Var Init Error: ${err.message}`);
     }
   }
 
   if (!adminApp) {
     try {
-      adminApp = admin.initializeApp({
-        projectId: firebaseConfig.projectId
-      });
-      console.log(`[Firebase] Initialized with default credentials for: ${firebaseConfig.projectId}`);
+      // Default app check
+      const defaultApp = admin.apps.find(a => a?.name === "[DEFAULT]");
+      adminApp = defaultApp || admin.initializeApp({ projectId: firebaseConfig.projectId });
+      console.log(`[Firebase] Initialized with ADC for: ${firebaseConfig.projectId}`);
     } catch (err: any) {
-      console.error("[Firebase] Final fallback initialization failed:", err.message);
+      console.error("[Firebase] Final fallback failed:", err.message);
     }
   }
 }
@@ -192,7 +205,11 @@ const initialSystemConfig = {
 
 // Seed function to migrate or initialize Firestore
 async function seedFirestore() {
-  console.log(`[Seeding] Checking Firestore status on database: ${runtimeConfig.databaseId}...`);
+  if (!db) {
+    console.log("[Seeding] Firestore skipped: instance not ready.");
+    return;
+  }
+  console.log(`[Seeding] Checking Firestore status on: ${runtimeConfig.databaseId}...`);
   try {
     const ispsSnap = await db.collection('isps').limit(1).get();
     isFirestoreAvailable = true;
@@ -255,7 +272,7 @@ async function seedFirestore() {
       console.log("Firestore already seeded.");
     }
   } catch (err: any) {
-    console.error(`[Seeding] Firestore sync failed for database ${runtimeConfig.databaseId}:`, err.code, err.message);
+    console.error(`[Seeding] Firestore sync failed:`, err?.message || err);
     isFirestoreAvailable = false;
   }
 }
@@ -286,6 +303,8 @@ async function getSystemConfig() {
   const localConfig = fullLocalDb.systemConfig || initialSystemConfig;
   if (!isFirestoreAvailable) return localConfig;
   try {
+    // Check if db is defined to avoid TypeError
+    if (!db) return localConfig;
     const configDoc = await db.collection('settings').doc('global').get();
     if (configDoc.exists) {
         const dbConfig = configDoc.data() || {};
@@ -297,10 +316,10 @@ async function getSystemConfig() {
             });
         }
         
-        fs.writeFileSync(DB_PATH, JSON.stringify({
+        safeWriteDB({
           ...fullLocalDb,
           systemConfig: configToReturn
-        }, null, 2));
+        });
 
         return configToReturn;
     }
@@ -328,10 +347,10 @@ async function getIsps() {
     lastCacheUpdate = now;
     
     const fullLocalDb = readLocalDB();
-    fs.writeFileSync(DB_PATH, JSON.stringify({
+    safeWriteDB({
       ...fullLocalDb,
       ispDatabase: cachedIsps
-    }, null, 2));
+    });
 
     return cachedIsps;
   } catch (e) {
@@ -468,10 +487,10 @@ app.use(express.json({ limit: '10mb' }));
       }
 
       // Always update local storage
-      fs.writeFileSync(DB_PATH, JSON.stringify({
+      safeWriteDB({
         ispDatabase: initialIspDatabase,
         systemConfig: initialSystemConfig
-      }, null, 2));
+      });
 
       // Clear cache
       cachedIsps = null;
@@ -750,10 +769,10 @@ app.use(express.json({ limit: '10mb' }));
       const mergedConfig = { ...currentConfig, ...config };
       
       const isps = await getIsps();
-      fs.writeFileSync(DB_PATH, JSON.stringify({
+      safeWriteDB({
         ispDatabase: isps,
         systemConfig: mergedConfig
-      }, null, 2));
+      });
       
       res.json({ success: true, firestore: syncedToCloud });
     } catch (e) {
@@ -766,10 +785,10 @@ app.use(express.json({ limit: '10mb' }));
     try {
       const isps = await getIsps();
       const config = await getSystemConfig();
-      fs.writeFileSync(DB_PATH, JSON.stringify({
+      safeWriteDB({
         ispDatabase: isps,
         systemConfig: config
-      }, null, 2));
+      });
     } catch (e) {
       console.error("Failed to persist to local", e);
     }
