@@ -1,7 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny
+    // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
     }
@@ -24,24 +24,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
     
-    // Settings
+    // Settings Document
     match /settings/global {
       allow read: if true;
       allow write: if isAdmin();
     }
-    
-    // Protected Files
-    match /protectedFiles/{fileId} {
-      allow read: if true;
-      allow write: if isAdmin() || true;
 
-      match /lines/{lineId} {
-        allow read: if true;
-        allow write: if isAdmin() || true;
-      }
-    }
-
-    // Admins list
+    // Admins List
     match /admins/{adminId} {
       allow read: if isSignedIn();
       allow write: if isAdmin();

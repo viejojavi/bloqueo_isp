@@ -40,7 +40,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T
   const timeoutPromise = new Promise<T>((resolve) => {
     timeoutId = setTimeout(() => {
       console.warn(`[Firebase] Operation timed out after ${timeoutMs}ms. Forcing local fallback.`);
-      isFirestoreAvailable = false;
       resolve(fallbackValue);
     }, timeoutMs);
   });
