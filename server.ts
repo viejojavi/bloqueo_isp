@@ -52,10 +52,14 @@ if (!adminApp && privateKey && clientEmail) {
     // 3. Fix internal formatting and headers
     if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
       const cleaned = formattedKey.replace(/\s+/g, '');
-      formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
+      // If it's a long base64 string, it's likely the key content
+      if (cleaned.length > 500) {
+        formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
+      } else {
+         throw new Error("Key is too short or invalid format (missing headers)");
+      }
     } else {
-      // Re-format to ensure it follows strict PEM structure (newlines every 64 chars is not strictly required by Node but good for safety)
-      // Actually, just stripping internal whitespace from the content is enough.
+      // Re-format to ensure it follows strict PEM structure
       const match = formattedKey.match(/-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/);
       if (match && match[1]) {
         const content = match[1].replace(/\s+/g, '');
@@ -636,7 +640,7 @@ app.use(express.json({ limit: '10mb' }));
     } else {
       const distPath = path.join(process.cwd(), "dist");
       app.use(express.static(distPath));
-      app.get("*all", (req, res) => {
+      app.get("*", (req, res) => {
         res.sendFile(path.join(distPath, "index.html"));
       });
     }
