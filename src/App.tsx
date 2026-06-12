@@ -80,24 +80,41 @@ export default function App() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [showDocuments, setShowDocuments] = useState(false);
   const [user, setUser] = useState<User | null>(null);
-  const [dbStatus, setDbStatus] = useState<{firestore: boolean, mode: string, projectId?: string} | null>(null);
+  const [dbStatus, setDbStatus] = useState<{
+    firestore: boolean, 
+    mode: string, 
+    projectId?: string,
+    databaseId?: string,
+    error?: string | null,
+    serviceAccount?: string,
+    fallbackWorked?: boolean,
+    configuredDatabaseId?: string,
+    env?: any
+  } | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
-  useEffect(() => {
-    async function testConnection() {
+  const checkDbStatus = async () => {
+    setCheckingStatus(true);
+    try {
+      const response = await fetch('/api/admin/status');
+      const status = await response.json();
+      setDbStatus(status);
+    } catch (err) {
+      console.error("Error fetching detailed DB status:", err);
+      // Fallback to basic frontend check
       try {
         await getDocFromServer(doc(db, 'test', 'connection'));
-        console.log("Firestore connection verified");
         setDbStatus({ firestore: true, mode: 'cloud' });
-      } catch (error) {
-        setDbStatus({ firestore: false, mode: 'local' });
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration. The client is offline.");
-        } else {
-          console.error("Firestore connection validation failed:", error);
-        }
+      } catch (e: any) {
+        setDbStatus({ firestore: false, mode: 'local', error: e.message });
       }
+    } finally {
+      setCheckingStatus(false);
     }
-    testConnection();
+  };
+
+  useEffect(() => {
+    checkDbStatus();
   }, []);
 
   const fetchData = (retries = 3) => {
@@ -169,10 +186,22 @@ export default function App() {
         !user ? (
           <LoginPanel onBack={() => setShowAdmin(false)} />
         ) : (
-          <AdminPanel dbStatus={dbStatus} setDbStatus={setDbStatus} onBack={() => { setShowAdmin(false); fetchData(); }} onLogout={() => { signOut(auth); setShowAdmin(false); }} />
+          <AdminPanel 
+            dbStatus={dbStatus} 
+            setDbStatus={setDbStatus} 
+            checkDbStatus={checkDbStatus}
+            checkingStatus={checkingStatus}
+            onBack={() => { setShowAdmin(false); fetchData(); }} 
+            onLogout={() => { signOut(auth); setShowAdmin(false); }} 
+          />
         )
       ) : (
-        <BlockerView data={data} onOpenAdmin={() => setShowAdmin(true)} onOpenDocuments={() => setShowDocuments(true)} />
+        <BlockerView 
+          data={data} 
+          dbStatus={dbStatus} 
+          onOpenAdmin={() => setShowAdmin(true)} 
+          onOpenDocuments={() => setShowDocuments(true)} 
+        />
       )}
     </div>
   );
@@ -397,7 +426,17 @@ function LoginPanel({ onBack }: { onBack: () => void }) {
   );
 }
 
-function BlockerView({ data, onOpenAdmin, onOpenDocuments }: { data: DetectionResponse | null, onOpenAdmin: () => void, onOpenDocuments: () => void }) {
+function BlockerView({ 
+  data, 
+  dbStatus, 
+  onOpenAdmin, 
+  onOpenDocuments 
+}: { 
+  data: DetectionResponse | null, 
+  dbStatus: any, 
+  onOpenAdmin: () => void, 
+  onOpenDocuments: () => void 
+}) {
   const [logoError, setLogoError] = useState(false);
   
   const isp = data?.isp || {
@@ -409,6 +448,37 @@ function BlockerView({ data, onOpenAdmin, onOpenDocuments }: { data: DetectionRe
   return (
     <>
       {/* Header */}
+      {/* DB Connection Alert Overlay */}
+      <AnimatePresence>
+        {dbStatus && !dbStatus.firestore && (
+          <motion.div 
+            initial={{ opacity: 0, height: 0 }} 
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="bg-red-600 text-white overflow-hidden relative z-50 shadow-lg"
+          >
+            <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="w-4 h-4 text-white animate-pulse" />
+                <p className="text-[11px] font-black tracking-tight leading-none uppercase italic">
+                  Modo de Emergencia: Firestore Cloud Desconectado
+                </p>
+                <div className="h-4 w-[1px] bg-white/20 hidden sm:block"></div>
+                <p className="text-[10px] font-bold opacity-80 leading-tight hidden sm:block">
+                  Los cambios no se guardarán permanentemente hasta restablecer la conexión.
+                </p>
+              </div>
+              <button 
+                onClick={onOpenAdmin}
+                className="bg-white/10 hover:bg-white/20 text-white px-4 py-1.5 rounded-full font-black text-[9px] uppercase tracking-wider transition-all border border-white/20"
+              >
+                Diagnosticar Conexión
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <header className="bg-white border-b border-slate-100 px-6 md:px-12 py-5 flex flex-col md:flex-row justify-between items-center gap-6 sticky top-0 z-10 shadow-sm">
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-5">
@@ -714,7 +784,21 @@ function BlockerView({ data, onOpenAdmin, onOpenDocuments }: { data: DetectionRe
   );
 }
 
-function AdminPanel({ onBack, onLogout, dbStatus, setDbStatus }: { onBack: () => void, onLogout: () => void, dbStatus: any, setDbStatus: any }) {
+function AdminPanel({ 
+  onBack, 
+  onLogout, 
+  dbStatus, 
+  setDbStatus,
+  checkDbStatus,
+  checkingStatus
+}: { 
+  onBack: () => void, 
+  onLogout: () => void, 
+  dbStatus: any, 
+  setDbStatus: any,
+  checkDbStatus: () => Promise<void>,
+  checkingStatus: boolean
+}) {
   const [isps, setIsps] = useState<ISPInfo[]>([]);
   const [systemConfig, setSystemConfig] = useState<any>({ defaultName: '', defaultLogo: '', protectedFiles: [] });
   const [loading, setLoading] = useState(true);
@@ -1306,6 +1390,133 @@ function AdminPanel({ onBack, onLogout, dbStatus, setDbStatus }: { onBack: () =>
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Firestore Health Status Section */}
+        <div className="bg-white rounded-3xl border border-slate-200 p-8 mb-8 shadow-sm">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <div className={`p-2 rounded-xl ${dbStatus?.firestore ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'}`}>
+                <Database className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-slate-800">Estado de Conexión Firestore</h3>
+                <p className="text-xs text-slate-500">Validación de sincronización cloud en tiempo real.</p>
+              </div>
+            </div>
+            <button 
+              onClick={checkDbStatus}
+              disabled={checkingStatus}
+              className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-all"
+              title="Actualizar estado"
+            >
+              <RefreshCw className={`w-5 h-5 ${checkingStatus ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Conectividad</p>
+              <div className="flex items-center gap-2">
+                <div className={`w-2 h-2 rounded-full ${dbStatus?.firestore ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]'} transition-all`} />
+                <p className={`font-bold ${dbStatus?.firestore ? 'text-emerald-700' : 'text-red-700'}`}>
+                  {dbStatus?.firestore ? 'Conectado' : 'Desconectado'}
+                </p>
+              </div>
+            </div>
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Modo de Datos</p>
+              <p className="font-bold text-slate-700 uppercase">{dbStatus?.mode === 'cloud' ? 'Firebase Cloud' : 'JSON Local'}</p>
+            </div>
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">ID Base de Datos</p>
+              <p className="font-mono text-xs font-bold text-slate-700">{dbStatus?.databaseId || '(default)'}</p>
+            </div>
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Project ID</p>
+              <p className="font-mono text-xs font-bold text-slate-700 truncate">{dbStatus?.projectId || '---'}</p>
+            </div>
+          </div>
+
+          {!dbStatus?.firestore && (
+            <div className="flex flex-col gap-4">
+              <div className="p-5 bg-red-50 border border-red-100 rounded-3xl">
+                <div className="flex gap-3">
+                  <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-sm font-bold text-red-900 mb-1">Error Detectado en el Servidor</h4>
+                    <div className="font-mono text-[11px] text-red-700 bg-white/50 p-3 rounded-xl border border-red-100 break-all leading-relaxed mb-4">
+                      {dbStatus?.error || 'No se pudo obtener el mensaje de error del servidor. Verifique los logs de Vercel.'}
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <h5 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Causas Probables:</h5>
+                      <ul className="text-xs text-slate-600 list-disc list-inside space-y-1 ml-1">
+                        <li>Las variables de entorno en Vercel no están configuradas (FIREBASE_SERVICE_ACCOUNT_KEY).</li>
+                        <li>La Cuenta de Servicio de Google Cloud no tiene el rol "Propietario" o "Editor".</li>
+                        <li>El ID de la base de datos es incorrecto (comúnmente se usa "(default)" pero en AI Studio puede variar).</li>
+                        <li>La IP del servidor de Vercel está bloqueada o hay un desajuste de regiones.</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="p-5 bg-slate-900 rounded-3xl text-white">
+                <h4 className="text-sm font-black italic mb-2 tracking-tight group flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" /> RESUMEN DE AMBIENTE VERCEL
+                </h4>
+                <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-4 text-[10px] font-mono opacity-80">
+                  <div className="flex justify-between border-b border-white/10 pb-1">
+                    <span>SA_KEY_PRESENT</span>
+                    <span className={dbStatus?.env?.hasServiceAccountKey ? 'text-emerald-400' : 'text-red-400'}>{dbStatus?.env?.hasServiceAccountKey ? 'TRUE' : 'FALSE'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-1">
+                    <span>PRIVATE_KEY_PRESENT</span>
+                    <span className={dbStatus?.env?.hasPrivateKey ? 'text-emerald-400' : 'text-red-400'}>{dbStatus?.env?.hasPrivateKey ? 'TRUE' : 'FALSE'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-1">
+                    <span>SA_ID_MATCH</span>
+                    <span className={dbStatus?.projectId === dbStatus?.serviceAccountProjectId ? 'text-emerald-400' : 'text-red-400'}>
+                      {dbStatus?.projectId === dbStatus?.serviceAccountProjectId ? 'PASS' : 'FAIL'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-1">
+                    <span>SA_EMAIL</span>
+                    <span className="text-blue-300 truncate ml-2 max-w-[120px]">{dbStatus?.serviceAccount || '---'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-1">
+                    <span>NODE_ENV</span>
+                    <span className="text-blue-300">{dbStatus?.env?.nodeEnv || '---'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-1">
+                    <span>IS_VERCEL</span>
+                    <span className="text-blue-300">{dbStatus?.env?.isVercel ? 'TRUE' : 'FALSE'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {dbStatus?.firestore && dbStatus?.fallbackWorked && (
+            <div className="p-4 bg-amber-50 border border-amber-100 rounded-2xl flex items-start gap-3">
+              <Info className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-bold text-amber-900">Modo de Recuperación Activo</p>
+                <p className="text-xs text-amber-700 leading-relaxed">
+                  La base de datos configurada [{dbStatus?.configuredDatabaseId}] falló, pero el sistema logró conectar exitosamente con la base de datos "(default)". 
+                  Se recomienda actualizar el ID de base de datos en su configuración de Vercel.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {dbStatus?.firestore && !dbStatus?.fallbackWorked && (
+            <div className="flex items-center gap-2 p-3 bg-emerald-50 text-emerald-700 rounded-2xl border border-emerald-100">
+              <CheckCircle2 className="w-4 h-4" />
+              <span className="text-xs font-bold">Conexión verificada: El servidor tiene acceso total a Firestore Cloud.</span>
+            </div>
+          )}
         </div>
 
         <div className="flex justify-between items-center mb-8">
