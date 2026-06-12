@@ -552,27 +552,44 @@ app.use(express.json({ limit: '10mb' }));
   app.post("/api/admin/config-db", async (req, res) => {
     const { databaseId: newDbId, serviceAccountKey } = req.body;
     
-    console.log(`[Admin] Received config-db update. New DB ID: ${newDbId}, Has SA Key: ${!!serviceAccountKey}`);
+    console.log(`[Admin] Update started. DB ID: ${newDbId || 'current'}, Has SA Key: ${!!serviceAccountKey}`);
 
     try {
+      // 1. Update Database ID
       if (newDbId !== undefined && newDbId !== null) {
-        runtimeConfig.databaseId = String(newDbId).trim();
+        runtimeConfig.databaseId = String(newDbId).trim() || '(default)';
       }
       
+      // 2. Process Service Account Key if provided
       if (serviceAccountKey && serviceAccountKey.trim()) {
         try {
-          // Clean the string if it contains hidden characters from pasting
-          const cleanedKey = serviceAccountKey.trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
+          // Robust cleaning: remove hidden chars, handle pasted quotes
+          let cleanedKey = serviceAccountKey.trim()
+            .replace(/[\u200B-\u200D\uFEFF]/g, '')
+            .replace(/^["']/, '')
+            .replace(/["']$/, '');
+          
           const sa = JSON.parse(cleanedKey);
           
           if (!sa.project_id || !sa.private_key || !sa.client_email) {
-             console.error("[Admin] Service account JSON missing required fields.");
-             return res.status(400).json({ success: false, error: "El JSON de la cuenta de servicio parece incompleto (faltan project_id, private_key o client_email)." });
+             return res.status(400).json({ 
+               success: false, 
+               error: "JSON incompleto. Asegúrese de que incluya 'project_id', 'private_key' y 'client_email'." 
+             });
+          }
+
+          // PEM Healing for private_key: ensure newlines are real and headers present
+          if (typeof sa.private_key === 'string') {
+            sa.private_key = sa.private_key.replace(/\\n/g, '\n');
+            if (!sa.private_key.includes("-----BEGIN PRIVATE KEY-----")) {
+               const raw = sa.private_key.replace(/\s+/g, '');
+               sa.private_key = `-----BEGIN PRIVATE KEY-----\n${raw}\n-----END PRIVATE KEY-----`;
+            }
           }
 
           const appName = "runtime-sa-config";
           try {
-            console.log("[Firebase] Re-initializing admin app with new credentials...");
+            console.log(`[Firebase] Re-initializing for project: ${sa.project_id}`);
             const existingApp = admin.apps.find(a => a?.name === appName);
             if (existingApp) {
               await existingApp.delete();
@@ -582,61 +599,52 @@ app.use(express.json({ limit: '10mb' }));
               credential: admin.credential.cert(sa),
               projectId: sa.project_id
             }, appName);
-            console.log("[Firebase] Runtime SA initialized successfully for project:", sa.project_id);
           } catch (initErr: any) {
-             console.error("[Firebase] Runtime init error:", initErr);
              return res.status(400).json({ success: false, error: `Error inicializando Firebase Admin: ${initErr.message}` });
           }
         } catch (parseErr: any) {
-          console.error("[Admin] Failed to parse service account JSON:", parseErr);
-          return res.status(400).json({ success: false, error: `JSON de cuenta de servicio inválido: ${parseErr.message}` });
+          return res.status(400).json({ success: false, error: `JSON de cuenta de servicio inválido o mal pegado: ${parseErr.message}` });
         }
       }
       
-      console.log("[Firebase] Refreshing database instance...");
+      // 3. Refresh and Validate
       refreshDbInstance();
       
       if (!db) {
-        console.error("[Firebase] DB instance is null after refresh.");
-        return res.status(500).json({ success: false, error: "No se pudo establecer la instancia de base de datos Firestore." });
+        return res.status(500).json({ success: false, error: "No se pudo crear la instancia de Firestore después de la configuración." });
       }
 
-      // Test the new connection
+      // 4. Test Connection with strict timeout
       try {
-        console.log(`[Firebase] Testing connection after reconfiguration on DB: ${runtimeConfig.databaseId}...`);
-        // Use a timeout to avoid hanging the request
+        console.log(`[Firebase] Testing connection on: ${runtimeConfig.databaseId}...`);
         const testDocRef = db.collection('test').doc('connection');
         
-        // We use a promise wrapper for the timeout
-        const timeout = 15000; // 15 seconds
-        const testResult = await Promise.race([
+        const timeout = 12000;
+        await Promise.race([
           testDocRef.get(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error(`Timeout de conexión (${timeout/1000}s). Verifique el ID de base de datos y permisos.`)), timeout))
-        ]) as admin.firestore.DocumentSnapshot;
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`La conexión tardó más de ${timeout/1000}s. Revise el ID de DB y permisos.`)), timeout))
+        ]);
         
         isFirestoreAvailable = true;
-        console.log("[Firebase] CONNECTOR TEST SUCCESSFUL.");
         
-        // If it was successful, let's also try to seed the basic collection just in case it's new
-        seedFirestore().catch(e => console.error("[Seeding] Background seeding failed:", e.message));
+        // Async seeding
+        seedFirestore().catch(e => console.error("[Seeding] Background error:", e.message));
 
-        res.json({ 
+        return res.json({ 
           success: true, 
-          message: "Conexión actualizada y verificada correctamente.", 
-          databaseId: runtimeConfig.databaseId,
-          testData: testResult.exists ? 'verified' : 'new_connection'
+          message: "Conexión exitosa. Base de datos vinculada.",
+          databaseId: runtimeConfig.databaseId
         });
       } catch (testErr: any) {
-        console.error("[Firebase] CONNECTOR TEST FAILED:", testErr.message);
         isFirestoreAvailable = false;
-        res.status(400).json({ 
+        return res.status(400).json({ 
           success: false, 
-          error: `Conexión fallida: ${testErr.message}. Asegúrese de que el ID de la base de datos sea correcto y el Service Account tenga el rol 'Cloud Datastore User' o 'Editor'.` 
+          error: `Conexión fallida: ${testErr.message}. Verifique que el Service Account tenga el rol 'Usuario de Cloud Datastore'.` 
         });
       }
     } catch (err: any) {
-      console.error("[Admin] config-db unexpected catch-all error:", err);
-      res.status(500).json({ success: false, error: "Error interno del servidor: " + err.message });
+      console.error("[Admin] Critical failure in config-db:", err);
+      return res.status(500).json({ success: false, error: `Error interno crítico: ${err.message}` });
     }
   });
 
