@@ -1,5 +1,5 @@
 import { useEffect, useState, FormEvent, ChangeEvent } from 'react';
-import { ShieldAlert, Info, Phone, MessageSquare, ExternalLink, Scale, OctagonAlert, Globe, Settings, Plus, Trash2, Edit2, X, Save, AlertTriangle, Search, Loader2, Upload, ChevronDown, MessageCircle, LogOut, Database, RefreshCw, CheckCircle2 } from 'lucide-react';
+import { ShieldAlert, Info, Phone, MessageSquare, ExternalLink, Scale, OctagonAlert, Globe, Settings, Plus, Trash2, Edit2, X, Save, AlertTriangle, Search, Loader2, Upload, ChevronDown, MessageCircle, LogOut, Database, RefreshCw, CheckCircle2, Key } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db, storage } from './lib/firebase';
 import { 
@@ -187,6 +187,7 @@ export default function App() {
           <LoginPanel onBack={() => setShowAdmin(false)} />
         ) : (
           <AdminPanel 
+            user={user}
             dbStatus={dbStatus} 
             setDbStatus={setDbStatus} 
             checkDbStatus={checkDbStatus}
@@ -790,16 +791,19 @@ function AdminPanel({
   dbStatus, 
   setDbStatus,
   checkDbStatus,
-  checkingStatus
+  checkingStatus,
+  user
 }: { 
   onBack: () => void, 
   onLogout: () => void, 
   dbStatus: any, 
   setDbStatus: any,
   checkDbStatus: () => Promise<void>,
-  checkingStatus: boolean
+  checkingStatus: boolean,
+  user: User | null
 }) {
   const [isps, setIsps] = useState<ISPInfo[]>([]);
+  const [activeTab, setActiveTab] = useState<'isps' | 'config' | 'cloud'>('isps');
   const [systemConfig, setSystemConfig] = useState<any>({ defaultName: '', defaultLogo: '', protectedFiles: [] });
   const [loading, setLoading] = useState(true);
   const [lookupLoading, setLookupLoading] = useState(false);
@@ -808,9 +812,38 @@ function AdminPanel({
   const [ispToDelete, setIspToDelete] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [cloudForm, setCloudForm] = useState({ databaseId: '', serviceAccountKey: '' });
+  const [cloudSaving, setCloudSaving] = useState(false);
+
+  const isMasterAdmin = user?.email === 'ticcolcolombia@gmail.com';
 
   const showToast = (msg: string) => {
     setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleUpdateCloudConfig = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!isMasterAdmin) return;
+    setCloudSaving(true);
+    try {
+      const res = await fetch('/api/admin/config-db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cloudForm)
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast("Configuración de nube actualizada correctamente.");
+        checkDbStatus();
+      } else {
+        alert("Error de conexión: " + (data.error || "Desconocido"));
+      }
+    } catch (err) {
+      alert("Error de red al actualizar configuración.");
+    } finally {
+      setCloudSaving(false);
+    }
   };
 
   useEffect(() => {
@@ -1211,48 +1244,150 @@ function AdminPanel({
       </header>
 
       <main className="flex-1 p-6 md:p-10 max-w-6xl mx-auto w-full">
-        {dbStatus && (
-          <div className={`mb-6 border rounded-2xl p-4 flex items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 duration-500 ${dbStatus.firestore ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
-            <div className="flex items-center gap-3">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${dbStatus.firestore ? 'bg-emerald-200' : 'bg-amber-200'}`}>
-                {dbStatus.firestore ? <CheckCircle2 className="w-5 h-5 text-emerald-700" /> : <AlertTriangle className="w-5 h-5 text-amber-700" />}
-              </div>
-              <div>
-                <p className={`text-sm font-black uppercase tracking-tight ${dbStatus.firestore ? 'text-emerald-900' : 'text-amber-900'}`}>
-                  {dbStatus.firestore ? 'Sincronización en la Nube Activa' : 'Modo de Respaldo Local Activo'}
-                </p>
-                <p className={`text-xs font-medium ${dbStatus.firestore ? 'text-emerald-700' : 'text-amber-700'}`}>
-                  {dbStatus.firestore 
-                    ? `El servidor está conectado correctamente a Firebase (${dbStatus.projectId}).` 
-                    : `${dbStatus.projectId ? `El servidor no tiene permisos IAM aún en ${dbStatus.projectId}.` : 'Firestore no disponible.'} Los cambios se guardarán en el servidor pero la nube se actualiza en modo lectura.`}
-                </p>
-              </div>
+        {/* Navigation Tabs */}
+        <div className="flex items-center gap-1 mb-8 bg-slate-100 p-1 rounded-2xl w-fit">
+          <button 
+            onClick={() => setActiveTab('isps')}
+            className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${activeTab === 'isps' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <Globe className="w-4 h-4" /> Operadores
+          </button>
+          <button 
+            onClick={() => setActiveTab('config')}
+            className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${activeTab === 'config' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+          >
+            <Settings className="w-4 h-4" /> Identidad
+          </button>
+          {isMasterAdmin && (
+            <button 
+              onClick={() => setActiveTab('cloud')}
+              className={`px-6 py-2.5 rounded-xl font-bold text-sm transition-all flex items-center gap-2 ${activeTab === 'cloud' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            >
+              <Database className="w-4 h-4" /> Nube
+            </button>
+          )}
+        </div>
+
+        {activeTab === 'cloud' && isMasterAdmin && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm relative overflow-hidden">
+               <div className="absolute top-0 left-0 w-1 bg-blue-600 h-full"></div>
+               <div className="flex items-center gap-4 mb-8">
+                 <div className="w-12 h-12 bg-blue-50 rounded-2xl flex items-center justify-center border border-blue-100">
+                   <Key className="w-6 h-6 text-blue-600" />
+                 </div>
+                 <div>
+                   <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">Configuración de Nube TICCOL</h2>
+                   <p className="text-sm text-slate-500 font-medium italic">Acceso exclusivo Maestro. Configura las credenciales críticas del servidor en caliente.</p>
+                 </div>
+               </div>
+
+               <form onSubmit={handleUpdateCloudConfig} className="space-y-6">
+                 <div>
+                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Database ID</label>
+                   <input 
+                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                     value={cloudForm.databaseId}
+                     onChange={e => setCloudForm({...cloudForm, databaseId: e.target.value})}
+                     placeholder="(default) o ID de AI Studio..."
+                   />
+                   <p className="mt-2 text-[10px] text-slate-500 ml-1">Por defecto: (default). Cambie solo si conoce el ID de Firestore exacto.</p>
+                 </div>
+
+                 <div>
+                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Service Account JSON (FIREBASE_SERVICE_ACCOUNT_KEY)</label>
+                   <textarea 
+                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 h-48"
+                     value={cloudForm.serviceAccountKey}
+                     onChange={e => setCloudForm({...cloudForm, serviceAccountKey: e.target.value})}
+                     placeholder='{ "type": "service_account", ... }'
+                   />
+                   <p className="mt-2 text-[10px] text-slate-500 ml-1">Pegue el contenido completo del archivo JSON de su cuenta de servicio. <strong>CUIDADO:</strong> Esto reemplaza la conexión activa.</p>
+                 </div>
+
+                 <div className="flex justify-end pt-4">
+                   <button 
+                     type="submit"
+                     disabled={cloudSaving}
+                     className="flex items-center gap-2 bg-blue-600 text-white px-8 py-3 rounded-xl font-bold text-sm hover:translate-y-[-2px] transition-all shadow-lg shadow-blue-200 active:scale-95 disabled:opacity-50"
+                   >
+                     {cloudSaving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                     {cloudSaving ? "Conectando..." : "Aplicar y Probar Conexión"}
+                   </button>
+                 </div>
+               </form>
             </div>
-            <div className="flex gap-2">
-              {!dbStatus.firestore && (
-                <button 
-                  onClick={handleInitialSeed}
-                  className="bg-amber-900 text-white px-4 py-2 rounded-lg text-xs font-bold hover:bg-amber-950 transition-colors uppercase tracking-widest"
-                >
-                  Forzar Sincronización
-                </button>
-              )}
-              <button 
-                onClick={async () => {
-                  setLoading(true);
-                  const res = await fetch('/api/admin/status');
-                  if (res.ok) setDbStatus(await res.json());
-                  setLoading(false);
-                }}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors uppercase tracking-widest ${dbStatus.firestore ? 'bg-emerald-900 text-white hover:bg-emerald-950' : 'bg-white text-amber-900 border border-amber-300 hover:bg-amber-50'}`}
-              >
-                Reintentar Conexión
-              </button>
+            
+            <div className="p-6 bg-slate-900 rounded-3xl text-white">
+              <h4 className="text-sm font-black italic mb-4 tracking-tight flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-400" /> RESUMEN TÉCNICO DE INSTANCIA
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-4 font-mono text-[11px] opacity-90">
+                <div className="space-y-4">
+                  <div className="flex justify-between border-b border-white/10 pb-2">
+                    <span>STATUS</span>
+                    <span className={dbStatus?.firestore ? 'text-emerald-400' : 'text-red-400'}>{dbStatus?.firestore ? 'ONLINE' : 'OFFLINE'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-2">
+                    <span>DATABASE_ID</span>
+                    <span className="text-blue-300">{dbStatus?.databaseId || '(default)'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-2">
+                    <span>PROJECT_ID</span>
+                    <span className="text-blue-300 truncate ml-4">{dbStatus?.projectId || '---'}</span>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="flex justify-between border-b border-white/10 pb-2">
+                    <span>SA_TYPE</span>
+                    <span className="text-blue-300">{dbStatus?.serviceAccountType || '---'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-2">
+                    <span>SA_EMAIL</span>
+                    <span className="text-blue-300 truncate ml-4">{dbStatus?.serviceAccount || '---'}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-white/10 pb-2">
+                    <span>FALLBACK</span>
+                    <span className={dbStatus?.fallbackWorked ? 'text-amber-400' : 'text-slate-500'}>{dbStatus?.fallbackWorked ? 'TRUE' : 'FALSE'}</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
-        {/* Global Configuration Section */}
-        <div className="bg-white rounded-3xl border border-slate-200 p-8 mb-12 shadow-sm overflow-hidden relative">
+
+        {(activeTab === 'config' || activeTab === 'isps') && dbStatus && (
+          <div className={`mb-8 border rounded-2xl p-4 flex items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 duration-500 ${dbStatus.firestore ? 'bg-emerald-50 border-emerald-200' : 'bg-amber-100/50 border-amber-200'}`}>
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${dbStatus.firestore ? 'bg-emerald-200' : 'bg-amber-200'}`}>
+                {dbStatus.firestore ? <CheckCircle2 className="w-5 h-5 text-emerald-700" /> : <AlertTriangle className="w-5 h-5 text-amber-900" />}
+              </div>
+              <div>
+                <p className={`text-sm font-black uppercase tracking-tight ${dbStatus.firestore ? 'text-emerald-900' : 'text-amber-950'}`}>
+                  {dbStatus.firestore ? 'Nube Conectada' : 'Modo Local Activo'}
+                </p>
+                <p className={`text-[11px] font-medium ${dbStatus.firestore ? 'text-emerald-700' : 'text-amber-800'}`}>
+                  {dbStatus.firestore 
+                    ? `Estado óptimo: Sincronizando con Firestore (${dbStatus.projectId})` 
+                    : `Atención: El servidor opera en modo local por falta de permisos Cloud.`}
+                </p>
+              </div>
+            </div>
+            <button 
+              onClick={checkDbStatus}
+              disabled={checkingStatus}
+              className={`px-4 py-2 rounded-lg text-[10px] font-black transition-all uppercase tracking-widest flex items-center gap-2 ${dbStatus.firestore ? 'bg-emerald-900 text-white' : 'bg-amber-900 text-white'}`}
+            >
+              {checkingStatus ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              Refrescar
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'config' && (
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {/* Global Configuration Section */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-8 shadow-sm overflow-hidden relative">
           <div className="absolute top-0 left-0 w-1 bg-blue-600 h-full"></div>
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
             <div className="flex items-center gap-4">
@@ -1551,8 +1686,12 @@ function AdminPanel({
             </div>
           )}
         </div>
+      </div>
+    )}
 
-        <div className="flex justify-between items-center mb-8">
+      {activeTab === 'isps' && (
+        <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="flex justify-between items-center mb-8">
           <div>
             <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Base de Datos ISP</h2>
             <p className="text-slate-500 font-medium">Gestiona los operadores y sus rangos de IP para el bloqueo dinámico.</p>
@@ -1712,7 +1851,9 @@ function AdminPanel({
             ))}
           </div>
         )}
-      </main>
+      </div>
+    )}
+    </main>
 
       <AnimatePresence>
         {editingIsp && (

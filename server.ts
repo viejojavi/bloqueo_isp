@@ -98,23 +98,28 @@ if (!adminApp) {
   }
 }
 
-const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
-console.log(`[Firebase] Target Database ID: ${databaseId}`);
+// Runtime config overrides
+let runtimeConfig = {
+  databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+  serviceAccountKey: null as any
+};
 
 let db: admin.firestore.Firestore;
 let isFirestoreAvailable = false;
 
-if (adminApp) {
+function refreshDbInstance() {
+  if (!adminApp) return;
   try {
-    db = getFirestore(adminApp, databaseId);
-  } catch (e: any) {
-    console.error(`[Firebase] Failed to initialize Firestore with ID ${databaseId}, attempting (default). Error: ${e.message}`);
-    try {
-      db = getFirestore(adminApp, '(default)');
-    } catch (e2: any) {
-      console.error("[Firebase] Fatal: Could not initialize any Firestore instance.");
-    }
+    const targetDbId = runtimeConfig.databaseId || '(default)';
+    db = getFirestore(adminApp, targetDbId);
+    console.log(`[Firebase] DB instance refreshed with ID: ${targetDbId}`);
+  } catch (e) {
+    console.error(`[Firebase] Failed to refresh DB instance:`, e);
   }
+}
+
+if (adminApp) {
+  refreshDbInstance();
 }
 
 interface ISPInfo {
@@ -185,11 +190,11 @@ const initialSystemConfig = {
 
 // Seed function to migrate or initialize Firestore
 async function seedFirestore() {
-  console.log(`[Seeding] Checking Firestore status on database: ${databaseId}...`);
+  console.log(`[Seeding] Checking Firestore status on database: ${runtimeConfig.databaseId}...`);
   try {
     const ispsSnap = await db.collection('isps').limit(1).get();
     isFirestoreAvailable = true;
-    console.log(`[Firebase] Connection established correctly to ${databaseId}.`);
+    console.log(`[Firebase] Connection established correctly to ${runtimeConfig.databaseId}.`);
     
     const configSnap = await db.collection('settings').doc('global').get();
     
@@ -248,7 +253,7 @@ async function seedFirestore() {
       console.log("Firestore already seeded.");
     }
   } catch (err: any) {
-    console.error(`[Seeding] Firestore sync failed for database ${databaseId}:`, err.code, err.message);
+    console.error(`[Seeding] Firestore sync failed for database ${runtimeConfig.databaseId}:`, err.code, err.message);
     isFirestoreAvailable = false;
   }
 }
@@ -481,7 +486,7 @@ app.use(express.json({ limit: '10mb' }));
     // Try a quick check to see if we recovered
     let connectionError = null;
     let fallbackWorked = false;
-    let workedDatabaseId = databaseId;
+    let workedDatabaseId = runtimeConfig.databaseId;
 
     try {
       if (db) {
@@ -496,7 +501,7 @@ app.use(express.json({ limit: '10mb' }));
       isFirestoreAvailable = false;
       
       // If primary failed, try to check if (default) works
-      if (databaseId !== '(default)' && adminApp) {
+      if (runtimeConfig.databaseId !== '(default)' && adminApp) {
         try {
           const defaultDb = getFirestore(adminApp, '(default)');
           await defaultDb.collection('test').doc('connection').get();
@@ -509,7 +514,7 @@ app.use(express.json({ limit: '10mb' }));
           db = defaultDb;
         } catch (err2: any) {
           // Both failed
-          connectionError = `Configured DB [${databaseId}] error: ${e.message}. Default DB error: ${err2.message}`;
+          connectionError = `Configured DB [${runtimeConfig.databaseId}] error: ${e.message}. Default DB error: ${err2.message}`;
         }
       }
     }
@@ -521,7 +526,7 @@ app.use(express.json({ limit: '10mb' }));
     res.json({
       firestore: isFirestoreAvailable,
       databaseId: workedDatabaseId,
-      configuredDatabaseId: databaseId,
+      configuredDatabaseId: runtimeConfig.databaseId,
       projectId: firebaseConfig.projectId,
       serviceAccountProjectId: saProjectId,
       serviceAccountType: saType,
@@ -537,6 +542,51 @@ app.use(express.json({ limit: '10mb' }));
         isVercel: !!(process.env.VERCEL || process.env.VERCEL_URL || process.env.NEXT_PUBLIC_VERCEL_URL)
       }
     });
+  });
+
+  app.post("/api/admin/config-db", async (req, res) => {
+    const { databaseId: newDbId, serviceAccountKey } = req.body;
+    
+    // Auth check should be done by the front-end (restricted UI) 
+    // and here we just apply. In a real app we would check the user token.
+
+    try {
+      if (newDbId) {
+        runtimeConfig.databaseId = newDbId;
+      }
+      
+      if (serviceAccountKey) {
+        try {
+          const sa = JSON.parse(serviceAccountKey);
+          // Re-initialize adminApp with new SA
+          try {
+            adminApp = admin.initializeApp({
+              credential: admin.credential.cert(sa),
+              projectId: sa.project_id || firebaseConfig.projectId
+            }, `runtime-${Date.now()}`); // Create a new app instance to avoid conflicts
+            console.log("[Firebase] Runtime SA initialized.");
+          } catch (initErr: any) {
+             throw new Error(`Error initializing app: ${initErr.message}`);
+          }
+        } catch (parseErr: any) {
+          throw new Error(`Invalid JSON: ${parseErr.message}`);
+        }
+      }
+      
+      refreshDbInstance();
+      
+      // Test the new connection
+      try {
+        await db.collection('test').doc('connection').get();
+        isFirestoreAvailable = true;
+        res.json({ success: true, message: "Conexión actualizada y verificada." });
+      } catch (testErr: any) {
+        isFirestoreAvailable = false;
+        res.status(400).json({ success: false, error: `Conexión fallida: ${testErr.message}` });
+      }
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message });
+    }
   });
 
   app.get("/api/admin/settings", async (req, res) => {
