@@ -1,7 +1,7 @@
 import { useEffect, useState, FormEvent, ChangeEvent } from 'react';
 import { ShieldAlert, Info, Phone, MessageSquare, ExternalLink, Scale, OctagonAlert, Globe, Settings, Plus, Trash2, Edit2, X, Save, AlertTriangle, Search, Loader2, Upload, ChevronDown, MessageCircle, LogOut, Database, RefreshCw, CheckCircle2, Key } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, db, storage } from './lib/firebase';
+import { auth, getDb, updateFirestoreDatabase, storage } from './lib/firebase';
 import { 
   signInWithPopup, 
   GoogleAuthProvider, 
@@ -99,11 +99,16 @@ export default function App() {
       const response = await fetch('/api/admin/status');
       const status = await response.json();
       setDbStatus(status);
+      
+      // Update client-side firestore database if it differs from current status
+      if (status.databaseId) {
+        updateFirestoreDatabase(status.databaseId);
+      }
     } catch (err) {
       console.error("Error fetching detailed DB status:", err);
       // Fallback to basic frontend check
       try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
+        await getDocFromServer(doc(getDb(), 'test', 'connection'));
         setDbStatus({ firestore: true, mode: 'cloud' });
       } catch (e: any) {
         setDbStatus({ firestore: false, mode: 'local', error: e.message });
@@ -181,7 +186,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
       {showDocuments ? (
-        <DocumentsView detectionData={data} onBack={() => setShowDocuments(false)} />
+        <DocumentsView detectionData={data} databaseId={dbStatus?.databaseId} onBack={() => setShowDocuments(false)} />
       ) : showAdmin ? (
         !user ? (
           <LoginPanel onBack={() => setShowAdmin(false)} />
@@ -208,7 +213,7 @@ export default function App() {
   );
 }
 
-function DocumentsView({ detectionData, onBack }: { detectionData: DetectionResponse | null, onBack: () => void }) {
+function DocumentsView({ detectionData, databaseId, onBack }: { detectionData: DetectionResponse | null, databaseId?: string, onBack: () => void }) {
   const [files, setFiles] = useState<ProtectedFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -225,7 +230,7 @@ function DocumentsView({ detectionData, onBack }: { detectionData: DetectionResp
         }).catch(() => {});
 
       // Fetch documents from Firestore
-      const unsubscribe = onSnapshot(doc(db, 'settings', 'global'), (snapshot) => {
+      const unsubscribe = onSnapshot(doc(getDb(), 'settings', 'global'), (snapshot) => {
         if (snapshot.exists()) {
           const configData = snapshot.data();
           setFiles(prev => {
@@ -250,7 +255,7 @@ function DocumentsView({ detectionData, onBack }: { detectionData: DetectionResp
       setError('Documentación restringida. Su red no se encuentra autorizada.');
       setLoading(false);
     }
-  }, [detectionData]);
+  }, [detectionData, databaseId]);
 
   const toggleExpand = (id: string) => {
     setExpandedFiles(prev => ({ ...prev, [id]: !prev[id] }));
@@ -827,20 +832,32 @@ function AdminPanel({
     if (!isMasterAdmin) return;
     setCloudSaving(true);
     try {
+      console.log("[Admin] Sending cloud configuration update...");
       const res = await fetch('/api/admin/config-db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cloudForm)
       });
-      const data = await res.json();
+      
+      let data;
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error("[Admin] Server returned non-JSON response:", text.substring(0, 500));
+        throw new Error(`El servidor respondió con un formato inesperado (${res.status}). Verifique la consola.`);
+      }
+
       if (data.success) {
         showToast("Configuración de nube actualizada correctamente.");
         checkDbStatus();
       } else {
-        alert("Error de conexión: " + (data.error || "Desconocido"));
+        alert("Error de configuración: " + (data.error || "Desconocido"));
       }
-    } catch (err) {
-      alert("Error de red al actualizar configuración.");
+    } catch (err: any) {
+      console.error("[Admin] handleUpdateCloudConfig network error:", err);
+      alert("Error de comunicación: " + (err.message || "No se pudo contactar con el servidor. Verifique su conexión o reporte el error."));
     } finally {
       setCloudSaving(false);
     }
@@ -872,7 +889,7 @@ function AdminPanel({
     };
     fetchFromServer();
 
-    const unsubIsps = onSnapshot(collection(db, 'isps'), (snapshot) => {
+    const unsubIsps = onSnapshot(collection(getDb(), 'isps'), (snapshot) => {
       const ispList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ISPInfo));
       setIsps(ispList);
       setLoading(false);
@@ -881,7 +898,7 @@ function AdminPanel({
       handleFirestoreError(err, OperationType.LIST, 'isps');
     });
 
-    const unsubConfig = onSnapshot(doc(db, 'settings', 'global'), (snapshot) => {
+    const unsubConfig = onSnapshot(doc(getDb(), 'settings', 'global'), (snapshot) => {
       console.log("Snapshot of settings/global exists:", snapshot.exists());
       if (snapshot.exists()) {
         const configData = snapshot.data();
@@ -908,7 +925,7 @@ function AdminPanel({
       unsubIsps();
       unsubConfig();
     };
-  }, []);
+  }, [dbStatus?.databaseId]);
 
   const handleResetDefaults = async () => {
     if (confirm('¿Estás seguro de restaurar todos los operadores predeterminados? Se perderán los cambios manuales.')) {
@@ -971,7 +988,7 @@ function AdminPanel({
       // If server failed to sync to firestore, try direct
       if (data.firestore === false) {
         try {
-          await deleteDoc(doc(db, 'isps', id));
+          await deleteDoc(doc(getDb(), 'isps', id));
           showToast('Eliminado en Nube + Local');
         } catch (e) {
           showToast('Eliminado solo en Local (Error IAM)');
@@ -1013,9 +1030,9 @@ function AdminPanel({
         { id: "5", asn: "273120", name: "TICCOL COLOMBIA S.A.S.", logo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png", ips: [], activationType: 'default', status: 'active' }
       ];
 
-      const batch = writeBatch(db);
+      const batch = writeBatch(getDb());
       initialIsps.forEach(isp => {
-        batch.set(doc(db, 'isps', isp.id), {
+        batch.set(doc(getDb(), 'isps', isp.id), {
           ...isp,
           createdAt: Timestamp.now(),
           updatedAt: Timestamp.now()
@@ -1031,7 +1048,7 @@ function AdminPanel({
         ],
         updatedAt: Timestamp.now()
       };
-      batch.set(doc(db, 'settings', 'global'), config, { merge: true });
+      batch.set(doc(getDb(), 'settings', 'global'), config, { merge: true });
 
       await batch.commit();
       
@@ -1070,7 +1087,7 @@ function AdminPanel({
               id: editingIsp.id || resData.isp.id,
               updatedAt: Timestamp.now()
             };
-            await setDoc(doc(db, 'isps', dataToSave.id), dataToSave, { merge: true });
+            await setDoc(doc(getDb(), 'isps', dataToSave.id), dataToSave, { merge: true });
             showToast('Guardado en Nube + Local');
           } catch (e) {
             showToast('Guardado solo en Local (Error IAM)');
@@ -1107,7 +1124,7 @@ function AdminPanel({
       if (res.ok) {
         if (resData.firestore === false) {
           try {
-            await setDoc(doc(db, 'settings', 'global'), {
+            await setDoc(doc(getDb(), 'settings', 'global'), {
               ...systemConfig,
               updatedAt: Timestamp.now()
             }, { merge: true });
@@ -1510,7 +1527,7 @@ function AdminPanel({
                         const newConfig = { ...systemConfig, protectedFiles: updatedFiles };
                         setSystemConfig(newConfig);
                         try {
-                          await setDoc(doc(db, 'settings', 'global'), newConfig);
+                          await setDoc(doc(getDb(), 'settings', 'global'), newConfig);
                           showToast('Contenido eliminado');
                         } catch (err) {
                           handleFirestoreError(err, OperationType.WRITE, 'settings/global');
@@ -1755,7 +1772,7 @@ function AdminPanel({
                         onClick={async () => {
                           const newStatus = isp.status === 'active' ? 'suspended' : 'active';
                           try {
-                            await updateDoc(doc(db, 'isps', isp.id!), { 
+                            await updateDoc(doc(getDb(), 'isps', isp.id!), { 
                               status: newStatus,
                               updatedAt: Timestamp.now()
                             });
@@ -1778,7 +1795,7 @@ function AdminPanel({
                           const expiry = new Date();
                           expiry.setDate(expiry.getDate() + 30);
                           try {
-                            await updateDoc(doc(db, 'isps', isp.id!), { 
+                            await updateDoc(doc(getDb(), 'isps', isp.id!), { 
                               status: 'active', 
                               expiresAt: expiry.toISOString(),
                               updatedAt: Timestamp.now()

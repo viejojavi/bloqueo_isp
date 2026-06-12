@@ -21,13 +21,13 @@ service cloud.firestore {
     // ISP Collection
     match /isps/{ispId} {
       allow read: if true;
-      allow write: if isAdmin() || true; // temporary permissive write for debugging
+      allow write: if isAdmin();
     }
     
     // Settings
     match /settings/global {
       allow read: if true;
-      allow write: if isAdmin() || true;
+      allow write: if isAdmin();
     }
     
     // Protected Files
