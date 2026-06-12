@@ -11,9 +11,64 @@ import firebaseConfig from "./firebase-applet-config.json" assert { type: "json"
 const DB_PATH = path.join(process.cwd(), "db.json");
 
 // Firebase Admin initialization
-const adminApp = admin.initializeApp({
-  projectId: firebaseConfig.projectId
-});
+let adminApp: admin.app.App;
+const serviceAccountKeyJson = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT)?.trim();
+const privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
+const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+
+if (serviceAccountKeyJson) {
+  try {
+    if (serviceAccountKeyJson.startsWith("firebase-")) {
+       console.warn("[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY looks like a filename, not JSON. Please paste the actual JSON content.");
+    }
+    const serviceAccount = JSON.parse(serviceAccountKeyJson);
+    adminApp = admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      projectId: firebaseConfig.projectId
+    });
+    console.log("[Firebase] Initialized with Service Account JSON string.");
+  } catch (err: any) {
+    console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT_KEY:", err.message);
+  }
+}
+
+if (!adminApp && privateKey && clientEmail) {
+  try {
+    let formattedKey = privateKey.trim();
+    // Handle quoted string from env vars
+    if ((formattedKey.startsWith('"') && formattedKey.endsWith('"')) || (formattedKey.startsWith("'") && formattedKey.endsWith("'"))) {
+      formattedKey = formattedKey.slice(1, -1);
+    }
+    // Replace escaped newlines
+    formattedKey = formattedKey.replace(/\\n/g, '\n');
+    
+    // Ensure PEM headers if missing (sometimes users only paste the base64 part)
+    if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
+      // Remove any whitespace inside the key if it was pasted from a formatted block but missing headers
+      const cleaned = formattedKey.replace(/\s/g, '');
+      formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
+    }
+
+    adminApp = admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: firebaseConfig.projectId,
+        clientEmail: clientEmail,
+        privateKey: formattedKey
+      }),
+      projectId: firebaseConfig.projectId
+    });
+    console.log("[Firebase] Initialized with individual env vars (privateKey/clientEmail).");
+  } catch (err: any) {
+    console.error(`[Firebase] Error initializing with individual env vars: ${err.message}`);
+  }
+}
+
+if (!adminApp) {
+  adminApp = admin.initializeApp({
+    projectId: firebaseConfig.projectId
+  });
+  console.log(`[Firebase] Initialized with default credentials for Project: ${firebaseConfig.projectId}. (Note: This may cause PERMISSION_DENIED for named databases if not properly configured in IAM)`);
+}
 
 const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
 console.log(`[Firebase] Attempting connection. Project: ${firebaseConfig.projectId}, Database: ${databaseId}`);
@@ -100,7 +155,7 @@ async function seedFirestore() {
   try {
     const ispsSnap = await db.collection('isps').limit(1).get();
     isFirestoreAvailable = true;
-    console.log("[Firebase] Connection established correctly.");
+    console.log(`[Firebase] Connection established correctly to ${databaseId}.`);
     
     const configSnap = await db.collection('settings').doc('global').get();
     
@@ -149,13 +204,17 @@ async function seedFirestore() {
         });
       }
 
+      // Ensure connectivity check doc exists
+      const testRef = db.collection('test').doc('connection');
+      batch.set(testRef, { status: 'online', timestamp: admin.firestore.FieldValue.serverTimestamp() });
+
       await batch.commit();
       console.log("Firestore seeding successful.");
     } else {
       console.log("Firestore already seeded.");
     }
   } catch (err: any) {
-    console.error("[Seeding] Firestore sync failed, using mock/local data mode.", err.message || err);
+    console.error(`[Seeding] Firestore sync failed for database ${databaseId}:`, err.code, err.message);
     isFirestoreAvailable = false;
   }
 }
@@ -240,23 +299,21 @@ async function getIsps() {
   }
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+const app = express();
+const PORT = 3000;
 
-  app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb' }));
 
   // CORS middleware for Vercel and local development
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (origin) {
-      if (
-        origin.endsWith(".vercel.app") ||
-        origin === "https://vercel.com" ||
-        origin.startsWith("http://localhost:") ||
-        origin.startsWith("https://localhost:") ||
-        origin.includes("127.0.0.1")
-      ) {
+      const allowedOrigins = ["https://bloqueo-isp.vercel.app", "https://vercel.com"];
+      const isAllowedVercel = origin.endsWith(".vercel.app") || origin === "https://vercel.com";
+      const isLocal = origin.startsWith("http://localhost:") || origin.startsWith("https://localhost:") || origin.includes("127.0.0.1");
+      const isSpecificTarget = allowedOrigins.includes(origin);
+
+      if (isAllowedVercel || isLocal || isSpecificTarget) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
         res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
@@ -534,23 +591,30 @@ async function startServer() {
     }
   };
 
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*all", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+  async function startServer() {
+    if (process.env.NODE_ENV !== "production") {
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
+      app.get("*all", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
+
+    if (!process.env.VERCEL) {
+      app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    }
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
-}
+  if (!process.env.VERCEL) {
+    startServer();
+  }
 
-startServer();
+  export default app;

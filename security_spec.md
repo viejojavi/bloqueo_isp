@@ -1,31 +1,37 @@
-# Security Specification - TICCOL ISP Portal
+# Security Specification - Portal de Bloqueo
 
 ## Data Invariants
-1. **ISP Records**:
-   - Must have `name` (string, max 100 chars).
-   - Must have `logo` (string, max 2MB for data URLs).
-   - Must have `ips` (list of strings).
-   - `activationType` must be one of: `default`, `indefinite`, `monthly`.
-   - `status` must be one of: `active`, `suspended`.
-   - `updatedAt` must be a server timestamp.
-2. **System Config**:
-   - `defaultName` (string).
-   - `defaultLogo` (string).
-   - `protectedFiles` (list of objects with `id`, `title`, `content`).
+- An ISP must have a valid name, logo, and at least one IP range (if not empty).
+- The system configuration (`settings/global`) must define default branding.
+- Only admins can modify ISPs and global settings.
+- Protected files are publicly readable but only admin-writable.
 
-## The Dirty Dozen Payloads (Target: DENY)
-1. **Unauthenticated Write**: Any write to `isps` or `settings` without auth.
-2. **Ghost Field Injection**: Adding `isVerified: true` to an ISP document.
-3. **Identity Spoofing**: Trying to set `createdBy` to another user's UID.
-4. **Invalid Type**: Setting `ips` to a string instead of a list.
-5. **Giant String**: Setting `name` to a 1MB string.
-6. **Invalid Enum**: Setting `status` to `deleted` (not in enum).
-7. **Malformed ID**: Creating a document with ID `../../etc/passwd`.
-8. **Bypassing App Logic**: Deleting a `default` activation ISP (if we want to enforce this in rules).
-9. **PII Leak**: Reading `users` collection (if it existed, but we don't have one).
-10. **State Shortcut**: Setting `status` directly to `active` without satisfying conditions (if any).
-11. **Orphaned Write**: Creating an ISP with a non-existent ASN (if we validated ASN).
-12. **Timestamp Fraud**: Providing a manual client timestamp for `updatedAt`.
+## Identity & Roles
+- **Public**: Can read ISPs and global settings. Can read protected files content.
+- **Support Account**: `ticcolcolombia@gmail.com` (verified) is a hardcoded Admin.
+- **User Account**: `CYRVOTbehhZoXiyFhERRG6Iyg623` is a hardcoded Admin.
+- **Admins**: Can perform all CRUD operations on all collections.
 
-## Test Environments
-- `firestore.rules.test.ts` will verify these cases.
+## The "Dirty Dozen" Payloads (Targets for rejection)
+1. Creating an ISP with a name longer than 100 characters.
+2. Creating an ISP with a logo size exceeding 2MB.
+3. Updating an ISP's `id` field.
+4. Setting ISP status to an invalid value (e.g., 'deleted').
+5. Modifying `settings/global` as a non-admin.
+6. Creating an admin record for self without existing admin permission.
+7. Injecting 1MB junk string into a document ID.
+8. Updating `createdAt` on an existing document.
+9. Deleting the `settings/global` document.
+10. Creating a protected file with missing mandatory fields.
+11. Bypassing `isAdmin` check by spoofing an email (but not verified).
+12. Performing a blanket `list` operation on a sensitive collection without filters.
+
+## Eight Pillars Implementation Details
+- **Master Gate**: All writes are wrapped in `isAdmin()` which checks for hardcoded UIDs/emails OR existence in `/admins/`.
+- **Validation Blueprints**: `isValidISP` and `isValidSystemConfig` helpers used on all create/update.
+- **Path Variable Hardening**: `isValidId` applied to ISPs and files.
+- **Tiered Identity**: Admins have full access.
+- **Total Array Guarding**: `ips` array in ISP checked for size and basic element type.
+- **PII Isolation**: No PII stored currently.
+- **Atomicity**: Incremental updates to settings use `updatedAt`.
+- **Query Enforcer**: Public reads are allowed for ISPs and Settings, no filtering required as they are public information.
