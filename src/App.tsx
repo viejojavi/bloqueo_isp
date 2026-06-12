@@ -1495,6 +1495,39 @@ function AdminPanel({
                   </div>
                 </div>
               </div>
+
+              {/* Vercel Fix Instructions */}
+              <div className="p-6 bg-blue-50 border border-blue-100 rounded-3xl">
+                <div className="flex gap-4">
+                  <div className="bg-blue-600 p-2 rounded-xl text-white">
+                    <Info className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-sm font-bold text-blue-900 mb-2">Instrucciones de Reparación para Vercel</h4>
+                    <p className="text-xs text-blue-800 mb-4 leading-relaxed">
+                      Para que la aplicación se conecte a Firestore desde <strong>bloqueo.ticcol.com</strong>, debe configurar manualmente las credenciales en el panel de Vercel:
+                    </p>
+                    <ol className="text-[11px] text-blue-700 space-y-3 font-medium">
+                      <li className="flex gap-2">
+                        <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">1</span>
+                        <span>Vaya a <strong>AI Studio Settings</strong> &gt; <strong>Secrets</strong> y busque <strong>FIREBASE_SERVICE_ACCOUNT_KEY</strong>.</span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">2</span>
+                        <span>En su proyecto de <strong>Vercel</strong>, navegue a <strong>Settings</strong> &gt; <strong>Environment Variables</strong>.</span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">3</span>
+                        <span>Agregue una nueva variable llamada <code>FIREBASE_SERVICE_ACCOUNT_KEY</code> y pegue el contenido JSON completo.</span>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">4</span>
+                        <span>Despliegue nuevamente su aplicación en Vercel para aplicar los cambios.</span>
+                      </li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

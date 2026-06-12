@@ -516,6 +516,7 @@ app.use(express.json({ limit: '10mb' }));
 
     const saInfo = (adminApp as any)?.options?.credential?.clientEmail || 'Default ADC / Unknown';
     const saProjectId = (adminApp as any)?.options?.projectId || 'Unknown';
+    const saType = (adminApp as any)?.options?.credential?.projectId ? 'Service Account' : 'Default Credentials/Env';
 
     res.json({
       firestore: isFirestoreAvailable,
@@ -523,16 +524,17 @@ app.use(express.json({ limit: '10mb' }));
       configuredDatabaseId: databaseId,
       projectId: firebaseConfig.projectId,
       serviceAccountProjectId: saProjectId,
+      serviceAccountType: saType,
       mode: isFirestoreAvailable ? 'cloud' : 'local',
       error: connectionError,
       fallbackWorked,
       serviceAccount: saInfo,
       env: {
-        hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
+        hasServiceAccountKey: !!(process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT),
         hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
         hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
         nodeEnv: process.env.NODE_ENV,
-        isVercel: !!process.env.VERCEL
+        isVercel: !!(process.env.VERCEL || process.env.VERCEL_URL || process.env.NEXT_PUBLIC_VERCEL_URL)
       }
     });
   });
