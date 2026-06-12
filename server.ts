@@ -1,6 +1,5 @@
 import "dotenv/config";
 import express from "express";
-import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import ipaddr from "ipaddr.js";
@@ -307,7 +306,9 @@ async function seedFirestore() {
   }
 }
 
-seedFirestore();
+if (!process.env.VERCEL) {
+  seedFirestore().catch(e => console.warn("[Seeding] Background seeding failed:", e.message));
+}
 
 // Helper to read local DB state
 function readLocalDB() {
@@ -842,6 +843,7 @@ app.use(express.json({ limit: '10mb' }));
 
   async function startServer() {
     if (process.env.NODE_ENV !== "production") {
+      const { createServer: createViteServer } = await import("vite");
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: "spa",
