@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
@@ -18,35 +19,47 @@ const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
 
 if (serviceAccountKeyJson) {
   try {
-    if (serviceAccountKeyJson.startsWith("firebase-")) {
-       console.warn("[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY looks like a filename, not JSON. Please paste the actual JSON content.");
+    if (serviceAccountKeyJson.startsWith("firebase-adminsdk") && !serviceAccountKeyJson.includes("{")) {
+       console.warn("[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY appears to be a filename or truncated. Please paste the FULL JSON content from your service account key file.");
+    } else {
+      const serviceAccount = JSON.parse(serviceAccountKeyJson);
+      adminApp = admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId: firebaseConfig.projectId
+      }, "custom-sa");
+      console.log("[Firebase] Initialized with Service Account JSON string from environment.");
     }
-    const serviceAccount = JSON.parse(serviceAccountKeyJson);
-    adminApp = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
-      projectId: firebaseConfig.projectId
-    });
-    console.log("[Firebase] Initialized with Service Account JSON string.");
   } catch (err: any) {
-    console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT_KEY:", err.message);
+    console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT_KEY JSON:", err.message);
   }
 }
 
 if (!adminApp && privateKey && clientEmail) {
   try {
     let formattedKey = privateKey.trim();
-    // Handle quoted string from env vars
+    // Remove wrapping quotes if present
     if ((formattedKey.startsWith('"') && formattedKey.endsWith('"')) || (formattedKey.startsWith("'") && formattedKey.endsWith("'"))) {
       formattedKey = formattedKey.slice(1, -1);
     }
-    // Replace escaped newlines
-    formattedKey = formattedKey.replace(/\\n/g, '\n');
     
-    // Ensure PEM headers if missing (sometimes users only paste the base64 part)
+    // Fix common pasting errors for private keys:
+    // 1. Literal \n strings
+    formattedKey = formattedKey.replace(/\\n/g, '\n');
+
+    // 2. Missing headers
     if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
-      // Remove any whitespace inside the key if it was pasted from a formatted block but missing headers
-      const cleaned = formattedKey.replace(/\s/g, '');
+      // Remove any internal whitespace that shouldn't be there
+      const cleaned = formattedKey.replace(/\s+/g, '');
+      // Some keys are base64-encoded PEM blocks without headers
       formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
+    } else {
+      // If it has headers but maybe bad internal spacing from a copy-paste
+      const parts = formattedKey.split("-----");
+      if (parts.length >= 5) {
+        // parts[2] is the actual key content
+        const keyBase64 = parts[2].replace(/\s+/g, '');
+        formattedKey = `-----BEGIN PRIVATE KEY-----\n${keyBase64}\n-----END PRIVATE KEY-----`;
+      }
     }
 
     adminApp = admin.initializeApp({
@@ -56,31 +69,43 @@ if (!adminApp && privateKey && clientEmail) {
         privateKey: formattedKey
       }),
       projectId: firebaseConfig.projectId
-    });
-    console.log("[Firebase] Initialized with individual env vars (privateKey/clientEmail).");
+    }, "env-vars");
+    console.log("[Firebase] Initialized with individual Private Key and Client Email.");
   } catch (err: any) {
     console.error(`[Firebase] Error initializing with individual env vars: ${err.message}`);
   }
 }
 
 if (!adminApp) {
-  adminApp = admin.initializeApp({
-    projectId: firebaseConfig.projectId
-  });
-  console.log(`[Firebase] Initialized with default credentials for Project: ${firebaseConfig.projectId}. (Note: This may cause PERMISSION_DENIED for named databases if not properly configured in IAM)`);
+  // Application Default Credentials (managed by AI Studio portal)
+  try {
+    adminApp = admin.initializeApp({
+      projectId: firebaseConfig.projectId
+    });
+    console.log(`[Firebase] Initialized with default credentials for Project: ${firebaseConfig.projectId}.`);
+  } catch (err: any) {
+    console.error("[Firebase] Error with default initialization:", err.message);
+    // Fallback one last time to project ID only if allowed
+  }
 }
 
 const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
-console.log(`[Firebase] Attempting connection. Project: ${firebaseConfig.projectId}, Database: ${databaseId}`);
+console.log(`[Firebase] Target Database ID: ${databaseId}`);
 
 let db: admin.firestore.Firestore;
 let isFirestoreAvailable = false;
 
-try {
-  db = getFirestore(adminApp, databaseId);
-} catch (e) {
-  console.error("[Firebase] Failed to initialize Firestore with custom ID, trying (default)", e);
-  db = getFirestore(adminApp, '(default)');
+if (adminApp) {
+  try {
+    db = getFirestore(adminApp, databaseId);
+  } catch (e: any) {
+    console.error(`[Firebase] Failed to initialize Firestore with ID ${databaseId}, attempting (default). Error: ${e.message}`);
+    try {
+      db = getFirestore(adminApp, '(default)');
+    } catch (e2: any) {
+      console.error("[Firebase] Fatal: Could not initialize any Firestore instance.");
+    }
+  }
 }
 
 interface ISPInfo {
@@ -308,12 +333,11 @@ app.use(express.json({ limit: '10mb' }));
   app.use((req, res, next) => {
     const origin = req.headers.origin;
     if (origin) {
-      const allowedOrigins = ["https://bloqueo-isp.vercel.app", "https://vercel.com"];
       const isAllowedVercel = origin.endsWith(".vercel.app") || origin === "https://vercel.com";
       const isLocal = origin.startsWith("http://localhost:") || origin.startsWith("https://localhost:") || origin.includes("127.0.0.1");
-      const isSpecificTarget = allowedOrigins.includes(origin);
+      const isExternalTarget = origin === "https://bloqueo-isp.vercel.app";
 
-      if (isAllowedVercel || isLocal || isSpecificTarget) {
+      if (isAllowedVercel || isLocal || isExternalTarget) {
         res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
         res.setHeader("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
