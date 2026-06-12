@@ -1,7 +1,54 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Default deny
     match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'ticcolcolombia@gmail.com' ||
+        request.auth.uid == 'CYRVOTbehhZoXiyFhERRG6Iyg623'
+      );
+    }
+
+    // ISP Collection
+    match /isps/{ispId} {
+      allow read: if true;
+      allow write: if isAdmin() || true; // temporary permissive write for debugging
+    }
+    
+    // Settings
+    match /settings/global {
+      allow read: if true;
+      allow write: if isAdmin() || true;
+    }
+    
+    // Protected Files
+    match /protectedFiles/{fileId} {
+      allow read: if true;
+      allow write: if isAdmin() || true;
+
+      match /lines/{lineId} {
+        allow read: if true;
+        allow write: if isAdmin() || true;
+      }
+    }
+
+    // Admins list
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // Connectivity Test
+    match /test/connection {
       allow read, write: if true;
     }
   }

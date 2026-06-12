@@ -23,11 +23,14 @@ if (serviceAccountKeyJson) {
        console.warn("[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY appears to be a filename or truncated. Please paste the FULL JSON content from your service account key file.");
     } else {
       const serviceAccount = JSON.parse(serviceAccountKeyJson);
+      if (serviceAccount.project_id && serviceAccount.project_id !== firebaseConfig.projectId) {
+        console.warn(`[Firebase] Warning: Service Account Project ID (${serviceAccount.project_id}) mismatch with config Project ID (${firebaseConfig.projectId}).`);
+      }
       adminApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
         projectId: firebaseConfig.projectId
       }, "custom-sa");
-      console.log("[Firebase] Initialized with Service Account JSON string from environment.");
+      console.log(`[Firebase] Initialized with Service Account: ${serviceAccount.client_email}`);
     }
   } catch (err: any) {
     console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT_KEY JSON:", err.message);
@@ -477,25 +480,59 @@ app.use(express.json({ limit: '10mb' }));
   app.get("/api/admin/status", async (req, res) => {
     // Try a quick check to see if we recovered
     let connectionError = null;
-    if (!isFirestoreAvailable) {
-      try {
-        await db.collection('isps').limit(1).get();
+    let fallbackWorked = false;
+    let workedDatabaseId = databaseId;
+
+    try {
+      if (db) {
+        // Try the configured database first
+        await db.collection('test').doc('connection').get();
         isFirestoreAvailable = true;
-      } catch (e: any) {
-        connectionError = e.message;
+      } else {
+        throw new Error("Firestore DB not initialized");
+      }
+    } catch (e: any) {
+      connectionError = e.message;
+      isFirestoreAvailable = false;
+      
+      // If primary failed, try to check if (default) works
+      if (databaseId !== '(default)' && adminApp) {
+        try {
+          const defaultDb = getFirestore(adminApp, '(default)');
+          await defaultDb.collection('test').doc('connection').get();
+          // If we are here, (default) actually works!
+          isFirestoreAvailable = true;
+          fallbackWorked = true;
+          workedDatabaseId = '(default)';
+          connectionError = null;
+          // Dynamically switch if we find a working one
+          db = defaultDb;
+        } catch (err2: any) {
+          // Both failed
+          connectionError = `Configured DB [${databaseId}] error: ${e.message}. Default DB error: ${err2.message}`;
+        }
       }
     }
 
+    const saInfo = (adminApp as any)?.options?.credential?.clientEmail || 'Default ADC / Unknown';
+    const saProjectId = (adminApp as any)?.options?.projectId || 'Unknown';
+
     res.json({
       firestore: isFirestoreAvailable,
-      databaseId,
+      databaseId: workedDatabaseId,
+      configuredDatabaseId: databaseId,
       projectId: firebaseConfig.projectId,
+      serviceAccountProjectId: saProjectId,
       mode: isFirestoreAvailable ? 'cloud' : 'local',
       error: connectionError,
+      fallbackWorked,
+      serviceAccount: saInfo,
       env: {
         hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
         hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
-        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL
+        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL,
+        nodeEnv: process.env.NODE_ENV,
+        isVercel: !!process.env.VERCEL
       }
     });
   });
