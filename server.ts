@@ -7,7 +7,9 @@ import ipaddr from "ipaddr.js";
 import fs from "fs";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
-import firebaseConfig from "./firebase-applet-config.json" assert { type: "json" };
+
+const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
 
 const DB_PATH = path.join(process.cwd(), "db.json");
 
@@ -100,7 +102,7 @@ if (!adminApp) {
 
 // Runtime config overrides
 let runtimeConfig = {
-  databaseId: firebaseConfig.firestoreDatabaseId || '(default)',
+  databaseId: process.env.FIREBASE_DATABASE_ID || (firebaseConfig as any).firestoreDatabaseId || '(default)',
   serviceAccountKey: null as any
 };
 

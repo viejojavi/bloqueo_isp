@@ -1670,7 +1670,7 @@ function AdminPanel({
                       </li>
                       <li className="flex gap-2">
                         <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">3</span>
-                        <span>Agregue una nueva variable llamada <code>FIREBASE_SERVICE_ACCOUNT_KEY</code> y pegue el contenido JSON completo.</span>
+                        <span>Agregue <code>FIREBASE_SERVICE_ACCOUNT_KEY</code> con el JSON completo y <code>FIREBASE_DATABASE_ID</code> con el ID de su base de datos.</span>
                       </li>
                       <li className="flex gap-2">
                         <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">4</span>
