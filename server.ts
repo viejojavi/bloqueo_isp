@@ -46,19 +46,20 @@ if (!adminApp && privateKey && clientEmail) {
     // 1. Literal \n strings
     formattedKey = formattedKey.replace(/\\n/g, '\n');
 
-    // 2. Missing headers
+    // 2. Clear any weird hidden characters or outer quotes
+    formattedKey = formattedKey.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+
+    // 3. Fix internal formatting and headers
     if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
-      // Remove any internal whitespace that shouldn't be there
       const cleaned = formattedKey.replace(/\s+/g, '');
-      // Some keys are base64-encoded PEM blocks without headers
       formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
     } else {
-      // If it has headers but maybe bad internal spacing from a copy-paste
-      const parts = formattedKey.split("-----");
-      if (parts.length >= 5) {
-        // parts[2] is the actual key content
-        const keyBase64 = parts[2].replace(/\s+/g, '');
-        formattedKey = `-----BEGIN PRIVATE KEY-----\n${keyBase64}\n-----END PRIVATE KEY-----`;
+      // Re-format to ensure it follows strict PEM structure (newlines every 64 chars is not strictly required by Node but good for safety)
+      // Actually, just stripping internal whitespace from the content is enough.
+      const match = formattedKey.match(/-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/);
+      if (match && match[1]) {
+        const content = match[1].replace(/\s+/g, '');
+        formattedKey = `-----BEGIN PRIVATE KEY-----\n${content}\n-----END PRIVATE KEY-----`;
       }
     }
 
@@ -72,7 +73,8 @@ if (!adminApp && privateKey && clientEmail) {
     }, "env-vars");
     console.log("[Firebase] Initialized with individual Private Key and Client Email.");
   } catch (err: any) {
-    console.error(`[Firebase] Error initializing with individual env vars: ${err.message}`);
+    const keyPreview = privateKey ? `${privateKey.substring(0, 10)}...${privateKey.substring(privateKey.length - 10)}` : 'null';
+    console.error(`[Firebase] Error initializing with individual env vars: ${err.message}. Key size: ${privateKey?.length}, Preview: ${keyPreview}`);
   }
 }
 
@@ -470,18 +472,27 @@ app.use(express.json({ limit: '10mb' }));
 
   app.get("/api/admin/status", async (req, res) => {
     // Try a quick check to see if we recovered
+    let connectionError = null;
     if (!isFirestoreAvailable) {
       try {
         await db.collection('isps').limit(1).get();
         isFirestoreAvailable = true;
-      } catch (e) {}
+      } catch (e: any) {
+        connectionError = e.message;
+      }
     }
 
     res.json({
       firestore: isFirestoreAvailable,
       databaseId,
       projectId: firebaseConfig.projectId,
-      mode: isFirestoreAvailable ? 'cloud' : 'local'
+      mode: isFirestoreAvailable ? 'cloud' : 'local',
+      error: connectionError,
+      env: {
+        hasServiceAccountKey: !!process.env.FIREBASE_SERVICE_ACCOUNT_KEY,
+        hasPrivateKey: !!process.env.FIREBASE_PRIVATE_KEY,
+        hasClientEmail: !!process.env.FIREBASE_CLIENT_EMAIL
+      }
     });
   });
 
