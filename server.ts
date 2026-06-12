@@ -15,90 +15,85 @@ const DB_PATH = path.join(process.cwd(), "db.json");
 
 // Firebase Admin initialization
 let adminApp: admin.app.App;
-const serviceAccountKeyJson = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT)?.trim();
-const privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
-const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
 
-if (serviceAccountKeyJson) {
-  try {
-    if (serviceAccountKeyJson.startsWith("firebase-adminsdk") && !serviceAccountKeyJson.includes("{")) {
-       console.warn("[Firebase] FIREBASE_SERVICE_ACCOUNT_KEY appears to be a filename or truncated. Please paste the FULL JSON content from your service account key file.");
-    } else {
-      const serviceAccount = JSON.parse(serviceAccountKeyJson);
-      if (serviceAccount.project_id && serviceAccount.project_id !== firebaseConfig.projectId) {
-        console.warn(`[Firebase] Warning: Service Account Project ID (${serviceAccount.project_id}) mismatch with config Project ID (${firebaseConfig.projectId}).`);
+function tryInitializeAdmin() {
+  const serviceAccountKeyJson = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT)?.trim();
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
+
+  if (serviceAccountKeyJson) {
+    try {
+      // Robust cleaning for common pasting issues
+      let cleanedJson = serviceAccountKeyJson
+        .replace(/[\u200B-\u200D\uFEFF]/g, '') // Hidden chars
+        .trim();
+      
+      // If it's wrapped in extra quotes from some copy-paste operations
+      if (cleanedJson.startsWith('"') && cleanedJson.endsWith('"') && cleanedJson.includes('\\"')) {
+        try {
+          cleanedJson = JSON.parse(cleanedJson);
+        } catch (e) { /* ignore and use as is */ }
       }
+
+      const sa = JSON.parse(cleanedJson);
+      
+      // Healing private key inside JSON
+      if (sa.private_key && typeof sa.private_key === 'string') {
+        sa.private_key = sa.private_key.replace(/\\n/g, '\n');
+      }
+
       adminApp = admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount),
+        credential: admin.credential.cert(sa),
+        projectId: sa.project_id || firebaseConfig.projectId
+      }, "init-sa");
+      console.log(`[Firebase] Initialized with Service Account JSON for project: ${sa.project_id}`);
+      return;
+    } catch (err: any) {
+      console.error("[Firebase] Fatal error parsing FIREBASE_SERVICE_ACCOUNT_KEY:", err.message);
+    }
+  }
+
+  if (!adminApp && privateKey && clientEmail) {
+    try {
+      let formattedKey = privateKey.trim();
+      formattedKey = formattedKey.replace(/\\n/g, '\n');
+      formattedKey = formattedKey.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+
+      if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
+        const cleaned = formattedKey.replace(/\s+/g, '');
+        if (cleaned.length > 500) {
+          formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
+        }
+      }
+
+      adminApp = admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: firebaseConfig.projectId,
+          clientEmail: clientEmail,
+          privateKey: formattedKey
+        }),
         projectId: firebaseConfig.projectId
-      }, "custom-sa");
-      console.log(`[Firebase] Initialized with Service Account: ${serviceAccount.client_email}`);
+      }, "init-env");
+      console.log("[Firebase] Initialized with individual Private Key and Client Email.");
+      return;
+    } catch (err: any) {
+      console.error(`[Firebase] Error with individual env vars: ${err.message}`);
     }
-  } catch (err: any) {
-    console.error("[Firebase] Error parsing FIREBASE_SERVICE_ACCOUNT_KEY JSON:", err.message);
+  }
+
+  if (!adminApp) {
+    try {
+      adminApp = admin.initializeApp({
+        projectId: firebaseConfig.projectId
+      });
+      console.log(`[Firebase] Initialized with default credentials for: ${firebaseConfig.projectId}`);
+    } catch (err: any) {
+      console.error("[Firebase] Final fallback initialization failed:", err.message);
+    }
   }
 }
 
-if (!adminApp && privateKey && clientEmail) {
-  try {
-    let formattedKey = privateKey.trim();
-    // Remove wrapping quotes if present
-    if ((formattedKey.startsWith('"') && formattedKey.endsWith('"')) || (formattedKey.startsWith("'") && formattedKey.endsWith("'"))) {
-      formattedKey = formattedKey.slice(1, -1);
-    }
-    
-    // Fix common pasting errors for private keys:
-    // 1. Literal \n strings
-    formattedKey = formattedKey.replace(/\\n/g, '\n');
-
-    // 2. Clear any weird hidden characters or outer quotes
-    formattedKey = formattedKey.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
-
-    // 3. Fix internal formatting and headers
-    if (!formattedKey.includes("-----BEGIN PRIVATE KEY-----")) {
-      const cleaned = formattedKey.replace(/\s+/g, '');
-      // If it's a long base64 string, it's likely the key content
-      if (cleaned.length > 500) {
-        formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
-      } else {
-         throw new Error("Key is too short or invalid format (missing headers)");
-      }
-    } else {
-      // Re-format to ensure it follows strict PEM structure
-      const match = formattedKey.match(/-----BEGIN PRIVATE KEY-----([\s\S]*?)-----END PRIVATE KEY-----/);
-      if (match && match[1]) {
-        const content = match[1].replace(/\s+/g, '');
-        formattedKey = `-----BEGIN PRIVATE KEY-----\n${content}\n-----END PRIVATE KEY-----`;
-      }
-    }
-
-    adminApp = admin.initializeApp({
-      credential: admin.credential.cert({
-        projectId: firebaseConfig.projectId,
-        clientEmail: clientEmail,
-        privateKey: formattedKey
-      }),
-      projectId: firebaseConfig.projectId
-    }, "env-vars");
-    console.log("[Firebase] Initialized with individual Private Key and Client Email.");
-  } catch (err: any) {
-    const keyPreview = privateKey ? `${privateKey.substring(0, 10)}...${privateKey.substring(privateKey.length - 10)}` : 'null';
-    console.error(`[Firebase] Error initializing with individual env vars: ${err.message}. Key size: ${privateKey?.length}, Preview: ${keyPreview}`);
-  }
-}
-
-if (!adminApp) {
-  // Application Default Credentials (managed by AI Studio portal)
-  try {
-    adminApp = admin.initializeApp({
-      projectId: firebaseConfig.projectId
-    });
-    console.log(`[Firebase] Initialized with default credentials for Project: ${firebaseConfig.projectId}.`);
-  } catch (err: any) {
-    console.error("[Firebase] Error with default initialization:", err.message);
-    // Fallback one last time to project ID only if allowed
-  }
-}
+tryInitializeAdmin();
 
 // Runtime config overrides
 let runtimeConfig = {
@@ -116,10 +111,10 @@ function refreshDbInstance() {
   }
   try {
     const targetDbId = runtimeConfig.databaseId || '(default)';
-    // In some SDK versions, getFirestore might throw if called multiple times on same app with same DB
-    // but usually it just returns the instance.
+    // Force a new instance if needed
     db = getFirestore(adminApp, targetDbId);
-    console.log(`[Firebase] DB instance refreshed with ID: ${targetDbId}`);
+    isFirestoreAvailable = !!db;
+    console.log(`[Firebase] DB instance created with ID: ${targetDbId}`);
   } catch (e) {
     console.error(`[Firebase] Failed to refresh DB instance:`, e);
   }
@@ -526,9 +521,9 @@ app.use(express.json({ limit: '10mb' }));
       }
     }
 
-    const saInfo = (adminApp as any)?.options?.credential?.clientEmail || 'Default ADC / Unknown';
-    const saProjectId = (adminApp as any)?.options?.projectId || 'Unknown';
-    const saType = (adminApp as any)?.options?.credential?.projectId ? 'Service Account' : 'Default Credentials/Env';
+    const saInfo = (adminApp as any)?.options?.credential?.clientEmail || 'ADC / Automatic';
+    const saProjectId = (adminApp as any)?.options?.projectId || firebaseConfig.projectId;
+    const projectMismatch = saProjectId !== firebaseConfig.projectId;
 
     res.json({
       firestore: isFirestoreAvailable,
@@ -536,7 +531,7 @@ app.use(express.json({ limit: '10mb' }));
       configuredDatabaseId: runtimeConfig.databaseId,
       projectId: firebaseConfig.projectId,
       serviceAccountProjectId: saProjectId,
-      serviceAccountType: saType,
+      projectMismatch,
       mode: isFirestoreAvailable ? 'cloud' : 'local',
       error: connectionError,
       fallbackWorked,

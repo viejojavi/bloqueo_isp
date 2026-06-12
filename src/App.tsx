@@ -1597,6 +1597,17 @@ function AdminPanel({
                   <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-sm font-bold text-red-900 mb-1">Error Detectado en el Servidor</h4>
+                    
+                    {dbStatus?.projectMismatch && (
+                      <div className="mb-4 p-3 bg-red-100 border border-red-200 rounded-xl flex items-start gap-3">
+                        <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                        <div className="text-[10px] text-red-800">
+                          <strong>¡DESAJUSTE DE PROYECTO!</strong><br /> 
+                          La llave es del proyecto <b>"{dbStatus?.serviceAccountProjectId}"</b> pero el archivo <code>firebase-applet-config.json</code> usa <b>"{dbStatus?.projectId}"</b>. Esto bloquea la sincronización.
+                        </div>
+                      </div>
+                    )}
+
                     <div className="font-mono text-[11px] text-red-700 bg-white/50 p-3 rounded-xl border border-red-100 break-all leading-relaxed mb-4">
                       {dbStatus?.error || 'No se pudo obtener el mensaje de error del servidor. Verifique los logs de Vercel.'}
                     </div>
@@ -1628,9 +1639,9 @@ function AdminPanel({
                     <span className={dbStatus?.env?.hasPrivateKey ? 'text-emerald-400' : 'text-red-400'}>{dbStatus?.env?.hasPrivateKey ? 'TRUE' : 'FALSE'}</span>
                   </div>
                   <div className="flex justify-between border-b border-white/10 pb-1">
-                    <span>SA_ID_MATCH</span>
-                    <span className={dbStatus?.projectId === dbStatus?.serviceAccountProjectId ? 'text-emerald-400' : 'text-red-400'}>
-                      {dbStatus?.projectId === dbStatus?.serviceAccountProjectId ? 'PASS' : 'FAIL'}
+                    <span>PROJECT_ID_MATCH</span>
+                    <span className={!dbStatus?.projectMismatch ? 'text-emerald-400' : 'text-red-400'}>
+                      {!dbStatus?.projectMismatch ? 'PASS' : 'FAIL'}
                     </span>
                   </div>
                   <div className="flex justify-between border-b border-white/10 pb-1">
@@ -1670,7 +1681,26 @@ function AdminPanel({
                       </li>
                       <li className="flex gap-2">
                         <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">3</span>
-                        <span>Agregue <code>FIREBASE_SERVICE_ACCOUNT_KEY</code> con el JSON completo y <code>FIREBASE_DATABASE_ID</code> con el ID de su base de datos.</span>
+                        <div className="flex-1">
+                          <span><strong>Opción A:</strong> Variable <code>FIREBASE_SERVICE_ACCOUNT_KEY</code> con el JSON completo.</span>
+                        </div>
+                      </li>
+                      <li className="flex gap-2">
+                        <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">B</span>
+                        <div className="flex-1">
+                          <span><strong>Opción B (Recomendada):</strong> Variables separadas (Copia/Paga más limpio).</span>
+                          <ul className="mt-1 space-y-1 list-disc list-inside opacity-80">
+                            <li><code>FIREBASE_CLIENT_EMAIL</code></li>
+                            <li><code>FIREBASE_PRIVATE_KEY</code></li>
+                            <li><code>FIREBASE_DATABASE_ID</code></li>
+                          </ul>
+                        </div>
+                      </li>
+                      <li className="flex gap-1 p-2 bg-amber-100/50 rounded-xl mt-2 border border-amber-200/50">
+                        <AlertTriangle className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                        <span className="text-[10px] text-amber-800">
+                          <strong>VITAL:</strong> El <code>projectId</code> en <code>firebase-applet-config.json</code> debe coincidir con el de su Cuenta de Servicio para que la UI funcione.
+                        </span>
                       </li>
                       <li className="flex gap-2">
                         <span className="bg-blue-200 text-blue-800 w-4 h-4 rounded-full flex items-center justify-center text-[10px] shrink-0">4</span>
