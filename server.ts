@@ -34,6 +34,26 @@ function safeWriteDB(data: any) {
   }
 }
 
+// Resilient wrapper to ensure database operations do not cause Serverless Function timeouts
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
+  let timeoutId: any;
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timeoutId = setTimeout(() => {
+      console.warn(`[Firebase] Operation timed out after ${timeoutMs}ms. Forcing local fallback.`);
+      isFirestoreAvailable = false;
+      resolve(fallbackValue);
+    }, timeoutMs);
+  });
+  
+  return Promise.race([
+    promise.then((val) => {
+      clearTimeout(timeoutId);
+      return val;
+    }),
+    timeoutPromise
+  ]);
+}
+
 // Firebase Admin initialization
 let adminApp: admin.app.App | null = null;
 
@@ -42,11 +62,15 @@ function tryInitializeAdmin() {
   const privateKey = process.env.FIREBASE_PRIVATE_KEY?.trim();
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL?.trim();
 
-  // Helper to get or create app
-  const getOrCreateApp = (options: admin.AppOptions, name: string) => {
-    const existing = admin.apps.find(a => a?.name === name);
-    if (existing) return existing;
-    return admin.initializeApp(options, name);
+  // Cleanly initialize/refresh the [DEFAULT] App instance
+  const initializeDefaultApp = (options: admin.AppOptions) => {
+    try {
+      const existing = admin.apps.find(a => a?.name === "[DEFAULT]");
+      if (existing) {
+        existing.delete().catch(() => {});
+      }
+    } catch (e) {}
+    return admin.initializeApp(options);
   };
 
   if (serviceAccountKeyJson) {
@@ -60,11 +84,11 @@ function tryInitializeAdmin() {
       const sa = JSON.parse(cleanedJson);
       if (sa.private_key) sa.private_key = sa.private_key.replace(/\\n/g, '\n');
 
-      adminApp = getOrCreateApp({
+      adminApp = initializeDefaultApp({
         credential: admin.credential.cert(sa),
         projectId: sa.project_id || firebaseConfig.projectId
-      }, "init-sa");
-      console.log(`[Firebase] Initialized with SA JSON for: ${sa.project_id}`);
+      });
+      console.log(`[Firebase] Initialized default app with SA JSON for: ${sa.project_id}`);
       return;
     } catch (err: any) {
       console.error("[Firebase] SA JSON Parse Error:", err.message);
@@ -79,15 +103,23 @@ function tryInitializeAdmin() {
         if (cleaned.length > 500) formattedKey = `-----BEGIN PRIVATE KEY-----\n${cleaned}\n-----END PRIVATE KEY-----`;
       }
 
-      adminApp = getOrCreateApp({
+      // Auto-extract Project ID from clientEmail to prevent misalignment crashes
+      let targetProjectId = firebaseConfig.projectId;
+      const emailMatch = clientEmail.match(/@([^.]+)\.iam\.gserviceaccount\.com/);
+      if (emailMatch && emailMatch[1]) {
+        targetProjectId = emailMatch[1];
+        console.log(`[Firebase] Auto-extracted project ID from credentials email: ${targetProjectId}`);
+      }
+
+      adminApp = initializeDefaultApp({
         credential: admin.credential.cert({
-          projectId: firebaseConfig.projectId,
+          projectId: targetProjectId,
           clientEmail: clientEmail,
           privateKey: formattedKey
         }),
-        projectId: firebaseConfig.projectId
-      }, "init-env");
-      console.log("[Firebase] Initialized with Private Key env vars.");
+        projectId: targetProjectId
+      });
+      console.log("[Firebase] Initialized default app with Service Account Env variables.");
       return;
     } catch (err: any) {
       console.error(`[Firebase] Env Var Init Error: ${err.message}`);
@@ -96,12 +128,11 @@ function tryInitializeAdmin() {
 
   if (!adminApp) {
     try {
-      // Default app check
       const defaultApp = admin.apps.find(a => a?.name === "[DEFAULT]");
       adminApp = defaultApp || admin.initializeApp({ projectId: firebaseConfig.projectId });
-      console.log(`[Firebase] Initialized with ADC for: ${firebaseConfig.projectId}`);
+      console.log(`[Firebase] Initialized default app via ADC for: ${firebaseConfig.projectId}`);
     } catch (err: any) {
-      console.error("[Firebase] Final fallback failed:", err.message);
+      console.error("[Firebase] Fallback ADC initialization failed:", err.message);
     }
   }
 }
@@ -301,12 +332,16 @@ function readLocalDB() {
 async function getSystemConfig() {
   const fullLocalDb = readLocalDB();
   const localConfig = fullLocalDb.systemConfig || initialSystemConfig;
-  if (!isFirestoreAvailable) return localConfig;
+  if (!isFirestoreAvailable || !db) return localConfig;
   try {
-    // Check if db is defined to avoid TypeError
-    if (!db) return localConfig;
-    const configDoc = await db.collection('settings').doc('global').get();
-    if (configDoc.exists) {
+    const fetchDocPromise = db.collection('settings').doc('global').get();
+    const configDoc = await withTimeout<admin.firestore.DocumentSnapshot | null>(
+      fetchDocPromise,
+      2500, // 2.5 seconds timeout limit
+      null
+    );
+
+    if (configDoc && configDoc.exists) {
         const dbConfig = configDoc.data() || {};
         const configToReturn = { ...localConfig, ...dbConfig };
         if (configToReturn.protectedFiles && localConfig.protectedFiles) {
@@ -325,6 +360,7 @@ async function getSystemConfig() {
     }
     return localConfig;
   } catch (e) {
+    console.warn("[Firebase] Error fetching system config, using local fallback", e);
     return localConfig;
   }
 }
@@ -334,7 +370,7 @@ let lastCacheUpdate = 0;
 const CACHE_TTL = 30 * 1000; // 30 seconds
 
 async function getIsps() {
-  if (!isFirestoreAvailable) {
+  if (!isFirestoreAvailable || !db) {
     return readLocalDB().ispDatabase;
   }
   const now = Date.now();
@@ -342,17 +378,28 @@ async function getIsps() {
     return cachedIsps;
   }
   try {
-    const ispsSnap = await db.collection('isps').get();
-    cachedIsps = ispsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ISPInfo));
-    lastCacheUpdate = now;
-    
-    const fullLocalDb = readLocalDB();
-    safeWriteDB({
-      ...fullLocalDb,
-      ispDatabase: cachedIsps
-    });
+    const fetchIspsPromise = db.collection('isps').get();
+    const ispsSnap = await withTimeout<admin.firestore.QuerySnapshot | null>(
+      fetchIspsPromise,
+      2500, // 2.5 seconds timeout limit
+      null
+    );
 
-    return cachedIsps;
+    if (ispsSnap) {
+      cachedIsps = ispsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ISPInfo));
+      lastCacheUpdate = now;
+      
+      const fullLocalDb = readLocalDB();
+      safeWriteDB({
+        ...fullLocalDb,
+        ispDatabase: cachedIsps
+      });
+
+      return cachedIsps;
+    } else {
+      console.warn("[Firebase] ISPs fetch timed out. Using local database.");
+      return readLocalDB().ispDatabase;
+    }
   } catch (e) {
     console.warn("[Firebase] Error fetching ISPs, falling back to local", e);
     return readLocalDB().ispDatabase;
