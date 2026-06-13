@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  portal-bloqueo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: portal_bloqueo_app
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persists the offline JSON database locally on the host machine
+      - ./db.json:/app/db.json
+    environment:
+      - NODE_ENV=production
+      # Add Firebase Environment Variables if config file is not used
+      - FIREBASE_SERVICE_ACCOUNT_KEY=
+      - FIREBASE_DATABASE_ID=
+    restart: unless-stopped
