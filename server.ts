@@ -6,14 +6,19 @@ import ipaddr from "ipaddr.js";
 import fs from "fs";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
+import bundledDb from "./db.json";
+import bundledFirebaseConfig from "./firebase-applet-config.json";
 
 // Firebase configurations
-let firebaseConfig: any = { projectId: process.env.FIREBASE_PROJECT_ID || "static-fallback" };
+let firebaseConfig: any = { 
+  projectId: process.env.FIREBASE_PROJECT_ID || bundledFirebaseConfig.projectId || "static-fallback",
+  ...bundledFirebaseConfig 
+};
 
 try {
   const configPath = path.join(process.cwd(), "firebase-applet-config.json");
   if (fs.existsSync(configPath)) {
-    firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    firebaseConfig = { ...firebaseConfig, ...JSON.parse(fs.readFileSync(configPath, "utf8")) };
   }
 } catch (e) {
   console.warn("[Firebase] Could not load firebase-applet-config.json, using defaults.", e);
@@ -75,6 +80,15 @@ function tryInitializeAdmin() {
     try {
       let cleanedJson = serviceAccountKeyJson.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
       
+      if (!cleanedJson.startsWith("{") && !cleanedJson.startsWith('"')) {
+        try {
+          const decoded = Buffer.from(cleanedJson, 'base64').toString('utf-8');
+          if (decoded.trim().startsWith('{')) {
+            cleanedJson = decoded.trim();
+          }
+        } catch (e) {}
+      }
+
       if (cleanedJson.startsWith('"') && cleanedJson.endsWith('"')) {
         try { cleanedJson = JSON.parse(cleanedJson); } catch (e) {}
       }
@@ -179,7 +193,7 @@ interface ISPInfo {
   updatedAt?: admin.firestore.Timestamp;
 }
 
-const initialIspDatabase: ISPInfo[] = [
+const initialIspDatabase: ISPInfo[] = (bundledDb as any)?.ispDatabase || [
   { 
     id: "1", 
     name: "Claro Colombia", 
@@ -216,14 +230,14 @@ const initialIspDatabase: ISPInfo[] = [
     id: "5", 
     asn: "273120",
     name: "TICCOL COLOMBIA S.A.S.", 
-    logo: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAdHx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys/RD84QzQ5OjcBCgoKDQwNGg8PGjclHyU3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3N//AABEIAFwAXAMBEQACEQEDEQH/xAAbAAEAAgMBAQAAAAAAAAAAAAAABQYDBAcBAv/EADQQAAEDAwIFAwEIAAcAAAAAAAEAAgMEBRESIQYTMUFRB2FxIhQyQlKBkaGxCBUWI2LB0f+EABsBAQACAwEBAAAAAAAAAAAAAAAEBQIDBgEH/8QAMhEAAgIBAgMECAcBAQAAAAAAAAECAxEEIQUSXHUY2LD0pZXt9uLeJ0qxca2W+Vv2OklkZORljZmaeZ50+T7Kst0tla5mti3q1VVj5YvcsajkgIAgPCMjBQGtPb6ScgyQM1Do9v0uHwRugKtc/T6grbkKxtQ9rSQZYnsDg8+QRgg4779j8yq9VOFbh1REt0kLLFZ0fzMdT6b22Ws50dTK2MnL4nsa8e+Ntif1XkNVOFfo/tHtmkrnarO35+Zhl9MKAyao7hU6c7NlY1+B4zsf3W2PELUsPDNM+G0uWVleRmqPTS0yO1Q1NXDn7zG6C0nzjT/AEtdWrtqWE8rxNt+ipueWsPvRsH08tD6SKB0tSHxNwJGFrT58fwsfxVqm5p4yZfg6XWq5LKXv95no+BrbS22ooBNUyRVDg55fozkdCMN2I8hez1dk5qfRo8r0dVcJQxlPvM9l4PttmqhU0j6gyAYOuQYcPcALyzVW2x5ZP4CrR00y5oLfzZYVHJQQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQBAEAQH//2Q==",
+    logo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png",
     ips: [],
     activationType: 'default',
     status: 'active'
   },
 ];
 
-const initialSystemConfig = {
+const initialSystemConfig = (bundledDb as any)?.systemConfig || {
   defaultName: "TICCOL SAS",
   defaultLogo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png",
   protectedFiles: [
@@ -318,15 +332,18 @@ function readLocalDB() {
       if (content.trim()) {
         const parsed = JSON.parse(content);
         return {
-          ispDatabase: parsed.ispDatabase || initialIspDatabase,
-          systemConfig: parsed.systemConfig || initialSystemConfig
+          ispDatabase: parsed.ispDatabase || (bundledDb as any)?.ispDatabase || initialIspDatabase,
+          systemConfig: parsed.systemConfig || (bundledDb as any)?.systemConfig || initialSystemConfig
         };
       }
     } catch (e) {
       console.warn("Could not read db.json", e);
     }
   }
-  return { ispDatabase: initialIspDatabase, systemConfig: initialSystemConfig };
+  return { 
+    ispDatabase: (bundledDb as any)?.ispDatabase || initialIspDatabase, 
+    systemConfig: (bundledDb as any)?.systemConfig || initialSystemConfig 
+  };
 }
 
 async function getSystemConfig() {
