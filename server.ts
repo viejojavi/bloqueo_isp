@@ -59,6 +59,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T
 
 // Firebase Admin initialization
 let adminApp: admin.app.App | null = null;
+let hasAdminCredentials = false;
 
 function tryInitializeAdmin() {
   const serviceAccountKeyJson = (process.env.FIREBASE_SERVICE_ACCOUNT_KEY || process.env.FIREBASE_SERVICE_ACCOUNT)?.trim();
@@ -100,6 +101,7 @@ function tryInitializeAdmin() {
         credential: admin.credential.cert(sa),
         projectId: sa.project_id || firebaseConfig.projectId
       });
+      hasAdminCredentials = true;
       console.log(`[Firebase] Initialized default app with SA JSON for: ${sa.project_id}`);
       return;
     } catch (err: any) {
@@ -131,6 +133,7 @@ function tryInitializeAdmin() {
         }),
         projectId: targetProjectId
       });
+      hasAdminCredentials = true;
       console.log("[Firebase] Initialized default app with Service Account Env variables.");
       return;
     } catch (err: any) {
@@ -142,9 +145,11 @@ function tryInitializeAdmin() {
     try {
       const defaultApp = admin.apps.find(a => a?.name === "[DEFAULT]");
       adminApp = defaultApp || admin.initializeApp({ projectId: firebaseConfig.projectId });
-      console.log(`[Firebase] Initialized default app via ADC for: ${firebaseConfig.projectId}`);
+      hasAdminCredentials = !process.env.VERCEL; // ADC works on Cloud Run, but not on Vercel without credentials
+      console.log(`[Firebase] Initialized default app via ADC for: ${firebaseConfig.projectId} (hasAdminCredentials: ${hasAdminCredentials})`);
     } catch (err: any) {
       console.error("[Firebase] Fallback ADC initialization failed:", err.message);
+      hasAdminCredentials = false;
     }
   }
 }
@@ -412,7 +417,7 @@ async function getSystemConfig() {
   const fullLocalDb = readLocalDB();
   const localConfig = fullLocalDb.systemConfig || initialSystemConfig;
   
-  if (isFirestoreAvailable && db) {
+  if (hasAdminCredentials && isFirestoreAvailable && db) {
     try {
       const fetchDocPromise = db.collection('settings').doc('global').get();
       const configDoc = await withTimeout<admin.firestore.DocumentSnapshot | null>(
@@ -473,7 +478,7 @@ async function getIsps() {
     return cachedIsps;
   }
 
-  if (isFirestoreAvailable && db) {
+  if (hasAdminCredentials && isFirestoreAvailable && db) {
     try {
       const fetchIspsPromise = db.collection('isps').get();
       const ispsSnap = await withTimeout<admin.firestore.QuerySnapshot | null>(
@@ -719,7 +724,7 @@ app.use(express.json({ limit: '10mb' }));
     let details = "";
 
     try {
-      if (db && isFirestoreAvailable) {
+      if (hasAdminCredentials && db && isFirestoreAvailable) {
         const testRef = db.collection('test').doc('connection');
         await Promise.race([
           testRef.get(),
@@ -947,16 +952,18 @@ app.use(express.json({ limit: '10mb' }));
     try {
       if (!isp.id) isp.id = Date.now().toString();
       
-      try {
-        await db.collection('isps').doc(isp.id).set({
-          ...isp,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        syncedToCloud = true;
-        isFirestoreAvailable = true;
-      } catch (err: any) {
-        console.error("[Firestore] Write failed:", err.message);
-        if (err.message.includes("PERMISSION_DENIED")) isFirestoreAvailable = false;
+      if (hasAdminCredentials && isFirestoreAvailable && db) {
+        try {
+          await db.collection('isps').doc(isp.id).set({
+            ...isp,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+          syncedToCloud = true;
+          isFirestoreAvailable = true;
+        } catch (err: any) {
+          console.error("[Firestore] Write failed:", err.message);
+          if (err.message.includes("PERMISSION_DENIED")) isFirestoreAvailable = false;
+        }
       }
       
       const isps = await getIsps();
@@ -980,14 +987,14 @@ app.use(express.json({ limit: '10mb' }));
     const { id } = req.params;
     let syncedToCloud = false;
     try {
-      try {
-        if (isFirestoreAvailable) {
+      if (hasAdminCredentials && isFirestoreAvailable && db) {
+        try {
           await db.collection('isps').doc(id).delete();
           syncedToCloud = true;
+        } catch (err: any) {
+          console.error("[Firestore] Delete failed:", err.message);
+          if (err.message.includes("PERMISSION_DENIED")) isFirestoreAvailable = false;
         }
-      } catch (err: any) {
-        console.error("[Firestore] Delete failed:", err.message);
-        if (err.message.includes("PERMISSION_DENIED")) isFirestoreAvailable = false;
       }
 
       const isps = await getIsps();
@@ -1005,23 +1012,25 @@ app.use(express.json({ limit: '10mb' }));
     const config = req.body;
     let syncedToCloud = false;
     try {
-      try {
-        const firestoreConfig = JSON.parse(JSON.stringify(config));
-        if (firestoreConfig.protectedFiles) {
-          firestoreConfig.protectedFiles = firestoreConfig.protectedFiles.map((f: any) => {
-             const { content, ...rest } = f;
-             return rest;
-          });
+      if (hasAdminCredentials && isFirestoreAvailable && db) {
+        try {
+          const firestoreConfig = JSON.parse(JSON.stringify(config));
+          if (firestoreConfig.protectedFiles) {
+            firestoreConfig.protectedFiles = firestoreConfig.protectedFiles.map((f: any) => {
+               const { content, ...rest } = f;
+               return rest;
+            });
+          }
+          await db.collection('settings').doc('global').set({
+            ...firestoreConfig,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+          syncedToCloud = true;
+          isFirestoreAvailable = true;
+        } catch (err: any) {
+          console.error("[Firestore] Settings write failed:", err.message);
+          if (err.message.includes("PERMISSION_DENIED")) isFirestoreAvailable = false;
         }
-        await db.collection('settings').doc('global').set({
-          ...firestoreConfig,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-        syncedToCloud = true;
-        isFirestoreAvailable = true;
-      } catch (err: any) {
-        console.error("[Firestore] Settings write failed:", err.message);
-        if (err.message.includes("PERMISSION_DENIED")) isFirestoreAvailable = false;
       }
       
       const currentConfig = await getSystemConfig();
