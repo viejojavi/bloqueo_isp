@@ -598,24 +598,78 @@ app.use(express.json({ limit: '10mb' }));
 
   app.get("/api/lookup-asn/:asn", async (req, res) => {
     const { asn } = req.params;
-    const resource = asn.toUpperCase().startsWith("AS") ? asn : `AS${asn}`;
-    try {
-      const overviewRes = await fetch(`https://stat.ripe.net/data/as-overview/data.json?resource=${resource}`);
-      const overviewData: any = await overviewRes.json();
-      const prefixesRes = await fetch(`https://stat.ripe.net/data/announced-prefixes/data.json?resource=${resource}`);
-      const prefixesData: any = await prefixesRes.json();
-
-      if (overviewData.status === "ok" && prefixesData.status === "ok") {
-        res.json({ 
-          name: overviewData.data.holder, 
-          prefixes: prefixesData.data.prefixes.map((p: any) => p.prefix)
-        });
-      } else {
-        res.status(404).json({ message: "ASN no encontrado" });
-      }
-    } catch (error) {
-      res.status(500).json({ message: "Error consultando ASN" });
+    const cleanAsn = asn.replace(/\D/g, '');
+    
+    if (!cleanAsn) {
+      return res.status(400).json({ message: "Número de ASN inválido" });
     }
+
+    const resource = `AS${cleanAsn}`;
+    const headers = { 
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) TICCOL-ISP-Portal/1.0',
+      'Accept': 'application/json'
+    };
+
+    // 1. Intentar consulta con RIPE Stat
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      const [overviewRes, prefixesRes] = await Promise.all([
+        fetch(`https://stat.ripe.net/data/as-overview/data.json?resource=${resource}`, { headers, signal: controller.signal }),
+        fetch(`https://stat.ripe.net/data/announced-prefixes/data.json?resource=${resource}`, { headers, signal: controller.signal })
+      ]);
+      clearTimeout(timeoutId);
+
+      if (overviewRes.ok && prefixesRes.ok) {
+        const overviewData: any = await overviewRes.json();
+        const prefixesData: any = await prefixesRes.json();
+
+        if (overviewData.status === "ok" && prefixesData.status === "ok" && overviewData.data) {
+          const prefixes = (prefixesData.data?.prefixes || []).map((p: any) => p.prefix);
+          return res.json({ 
+            name: overviewData.data.holder || `AS${cleanAsn}`, 
+            prefixes,
+            source: 'RIPE Stat'
+          });
+        }
+      }
+    } catch (ripeError: any) {
+      console.warn(`[ASN Lookup] RIPE Stat falló para AS${cleanAsn} (${ripeError.message}). Probando BGPView...`);
+    }
+
+    // 2. Fallback a BGPView API (más tolerante con IPs de servidores cloud como Vercel)
+    try {
+      const bgpRes = await fetch(`https://api.bgpview.io/asn/${cleanAsn}/prefixes`);
+      if (bgpRes.ok) {
+        const bgpData: any = await bgpRes.json();
+        if (bgpData.status === "ok" && bgpData.data) {
+          const ipv4 = (bgpData.data.ipv4_prefixes || []).map((p: any) => p.prefix);
+          const ipv6 = (bgpData.data.ipv6_prefixes || []).map((p: any) => p.prefix);
+          
+          let holderName = `AS${cleanAsn}`;
+          try {
+            const nameRes = await fetch(`https://api.bgpview.io/asn/${cleanAsn}`);
+            if (nameRes.ok) {
+              const nameData: any = await nameRes.json();
+              holderName = nameData.data?.name || nameData.data?.description_short || holderName;
+            }
+          } catch (e) {
+            // ignorar error de nombre
+          }
+
+          return res.json({
+            name: holderName,
+            prefixes: [...ipv4, ...ipv6],
+            source: 'BGPView API'
+          });
+        }
+      }
+    } catch (bgpErr: any) {
+      console.error(`[ASN Lookup] Error en BGPView fallback:`, bgpErr.message);
+    }
+
+    res.status(404).json({ message: `No se pudieron obtener datos para el ASN ${cleanAsn}. Verifique el número o ingrese las IPs manualmente.` });
   });
 
   app.post("/api/admin/reset-isps", async (req, res) => {

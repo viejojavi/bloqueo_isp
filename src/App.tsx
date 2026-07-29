@@ -969,27 +969,84 @@ function AdminPanel({
     }
   };
 
-  const handleASNLookup = () => {
+  const handleASNLookup = async () => {
     if (!editingIsp?.asn) return;
+    const cleanAsn = editingIsp.asn.replace(/\D/g, '');
+    if (!cleanAsn) {
+      showToast("Ingrese un número de ASN válido");
+      return;
+    }
+
     setLookupLoading(true);
-    fetch(`/api/lookup-asn/${editingIsp.asn}`)
-      .then(res => res.json())
-      .then(data => {
-        if (data.name) {
-          const newIps = [...(editingIsp.ips || [])];
-          data.prefixes.forEach((p: string) => {
-            if (!newIps.includes(p)) newIps.push(p);
-          });
-          
-          setEditingIsp({
-            ...editingIsp,
-            name: (editingIsp.name && editingIsp.name !== '') ? editingIsp.name : data.name,
-            ips: newIps
-          });
+    showToast(`Consultando prefijos para ASN ${cleanAsn}...`);
+
+    try {
+      // 1. Intentar servidor backend primero
+      const res = await fetch(`/api/lookup-asn/${cleanAsn}`);
+      const data = await res.json();
+
+      if (res.ok && data.name && data.prefixes) {
+        const newIps = [...(editingIsp.ips || [])];
+        data.prefixes.forEach((p: string) => {
+          if (!newIps.includes(p)) newIps.push(p);
+        });
+
+        setEditingIsp({
+          ...editingIsp,
+          asn: cleanAsn,
+          name: (editingIsp.name && editingIsp.name.trim() !== '') ? editingIsp.name : data.name,
+          ips: newIps
+        });
+        showToast(`Cargados ${data.prefixes.length} prefijos (${data.source || 'Nube'})`);
+        return;
+      }
+
+      // Si el backend devolvió error, probar directamente en el navegador a BGPView API
+      throw new Error(data.message || "Error consultando servidor backend");
+    } catch (err: any) {
+      console.warn("[ASN Lookup Frontend] Servidor secundario backend falló, intentando consulta directa desde navegador...", err.message);
+      
+      try {
+        const bgpRes = await fetch(`https://api.bgpview.io/asn/${cleanAsn}/prefixes`);
+        if (bgpRes.ok) {
+          const bgpData = await bgpRes.json();
+          if (bgpData.status === "ok" && bgpData.data) {
+            const ipv4 = (bgpData.data.ipv4_prefixes || []).map((p: any) => p.prefix);
+            const ipv6 = (bgpData.data.ipv6_prefixes || []).map((p: any) => p.prefix);
+            const allPrefixes = [...ipv4, ...ipv6];
+
+            let name = `AS${cleanAsn}`;
+            try {
+              const nameRes = await fetch(`https://api.bgpview.io/asn/${cleanAsn}`);
+              if (nameRes.ok) {
+                const nameData = await nameRes.json();
+                name = nameData.data?.name || nameData.data?.description_short || name;
+              }
+            } catch (e) {}
+
+            const newIps = [...(editingIsp.ips || [])];
+            allPrefixes.forEach((p: string) => {
+              if (!newIps.includes(p)) newIps.push(p);
+            });
+
+            setEditingIsp({
+              ...editingIsp,
+              asn: cleanAsn,
+              name: (editingIsp.name && editingIsp.name.trim() !== '') ? editingIsp.name : name,
+              ips: newIps
+            });
+            showToast(`Cargados ${allPrefixes.length} prefijos (BGPView directo)`);
+            return;
+          }
         }
-      })
-      .catch(err => alert("Error consultando ASN"))
-      .finally(() => setLookupLoading(false));
+        showToast(`No se encontraron prefijos para el ASN ${cleanAsn}`);
+      } catch (browserErr) {
+        console.error("[ASN Lookup Frontend] Falló consulta directa desde navegador:", browserErr);
+        showToast("Error al obtener prefijos del ASN. Verifique la conexión.");
+      }
+    } finally {
+      setLookupLoading(false);
+    }
   };
 
   const handleLogoUpload = (e: ChangeEvent<HTMLInputElement>) => {
