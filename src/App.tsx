@@ -819,6 +819,8 @@ function AdminPanel({
   const [uploading, setUploading] = useState(false);
   const [cloudForm, setCloudForm] = useState({ databaseId: '', serviceAccountKey: '' });
   const [cloudSaving, setCloudSaving] = useState(false);
+  const [realtimeLatency, setRealtimeLatency] = useState<number | null>(null);
+  const [lastHealthCheck, setLastHealthCheck] = useState<string | null>(null);
 
   const isMasterAdmin = user?.email === 'ticcolcolombia@gmail.com';
 
@@ -921,9 +923,30 @@ function AdminPanel({
       handleFirestoreError(err, OperationType.GET, 'settings/global');
     });
 
+    // Heartbeat de monitoreo en tiempo real de la base de datos
+    const runRealtimeHealthCheck = async () => {
+      try {
+        const res = await fetch('/api/admin/validate-db');
+        if (res.ok) {
+          const val = await res.json();
+          setRealtimeLatency(val.latencyMs || 0);
+          setLastHealthCheck(new Date().toLocaleTimeString());
+          if (val.cloudConnected !== undefined) {
+            setDbStatus((prev: any) => prev ? { ...prev, firestore: val.cloudConnected, mode: val.mode } : prev);
+          }
+        }
+      } catch (e) {
+        setRealtimeLatency(null);
+      }
+    };
+
+    runRealtimeHealthCheck();
+    const intervalId = setInterval(runRealtimeHealthCheck, 10000);
+
     return () => {
       unsubIsps();
       unsubConfig();
+      clearInterval(intervalId);
     };
   }, [dbStatus?.databaseId]);
 
@@ -1114,6 +1137,21 @@ function AdminPanel({
     e.preventDefault();
     setLoading(true);
     try {
+      showToast('Validando conexión de base de datos...');
+      try {
+        const valRes = await fetch('/api/admin/validate-db');
+        if (valRes.ok) {
+          const valData = await valRes.json();
+          if (valData.cloudConnected) {
+            console.log(`[DB Validation] Conexión activa. Latencia: ${valData.latencyMs}ms`);
+          } else {
+            console.warn('[DB Validation] Sin conexión Nube direct. Usando respaldo local.');
+          }
+        }
+      } catch (e) {
+        console.warn('[DB Validation] No se pudo verificar la conexión previa.');
+      }
+
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1128,12 +1166,12 @@ function AdminPanel({
               ...systemConfig,
               updatedAt: Timestamp.now()
             }, { merge: true });
-            showToast('Configuración Nube + Local');
+            showToast('Configuración guardada (Nube + Local)');
           } catch (e) {
-            showToast('Configuración solo Local (Error IAM)');
+            showToast('Guardado en local seguro (Error IAM Cloud)');
           }
         } else {
-          showToast('Configuración guardada');
+          showToast('Configuración sincronizada exitosamente');
         }
         setEditingConfig(false);
         // FORCE REFRESH FROM SERVER
@@ -1141,10 +1179,10 @@ function AdminPanel({
           fetch('/api/admin/settings').then(r => r.json()).then(conf => setSystemConfig(conf || { defaultName: '', defaultLogo: '', protectedFiles: [] }));
         }, 500);
       } else {
-        showToast('Error al guardar');
+        showToast('Error al guardar configuración');
       }
     } catch (err) {
-      showToast('Error de conexión');
+      showToast('Error de conexión al servidor');
     } finally {
       setLoading(false);
     }
@@ -1552,8 +1590,14 @@ function AdminPanel({
                 <Database className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-slate-800">Estado de Conexión Firestore</h3>
-                <p className="text-xs text-slate-500">Validación de sincronización cloud en tiempo real.</p>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-bold text-slate-800">Estado de Conexión Firestore</h3>
+                  <div className="flex items-center gap-1.5 px-2.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-full text-[10px] font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Monitoreo en Tiempo Real</span>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-500">Validación de sincronización cloud en tiempo real {lastHealthCheck ? `(Última verificación: ${lastHealthCheck})` : ''}.</p>
               </div>
             </div>
             <button 
@@ -1566,7 +1610,7 @@ function AdminPanel({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Conectividad</p>
               <div className="flex items-center gap-2">
@@ -1579,6 +1623,12 @@ function AdminPanel({
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Modo de Datos</p>
               <p className="font-bold text-slate-700 uppercase">{dbStatus?.mode === 'cloud' ? 'Firebase Cloud' : 'JSON Local'}</p>
+            </div>
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Latencia Realtime</p>
+              <p className="font-mono text-xs font-bold text-emerald-600">
+                {realtimeLatency !== null ? `${realtimeLatency} ms` : 'Verificando...'}
+              </p>
             </div>
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">ID Base de Datos</p>

@@ -567,6 +567,41 @@ app.use(express.json({ limit: '10mb' }));
     }
   });
 
+  app.get("/api/admin/validate-db", async (req, res) => {
+    const startTime = Date.now();
+    let isCloudOk = false;
+    let latencyMs = 0;
+    let details = "";
+
+    try {
+      if (db && isFirestoreAvailable) {
+        const testRef = db.collection('test').doc('connection');
+        await Promise.race([
+          testRef.get(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout de prueba de conexión (>3s)")), 3000))
+        ]);
+        isCloudOk = true;
+        latencyMs = Date.now() - startTime;
+        details = "Conexión a Firestore verificada correctamente.";
+      } else {
+        details = "Firestore no disponible o no configurado. Operando con almacenamiento de respaldo local JSON.";
+      }
+    } catch (err: any) {
+      isCloudOk = false;
+      details = `Error al conectar con Firestore: ${err.message}. Operando en modo local seguro.`;
+    }
+
+    res.json({
+      ok: true,
+      cloudConnected: isCloudOk,
+      mode: isCloudOk ? 'cloud' : 'local',
+      latencyMs: isCloudOk ? latencyMs : Date.now() - startTime,
+      databaseId: runtimeConfig.databaseId,
+      timestamp: new Date().toISOString(),
+      details
+    });
+  });
+
   app.get("/api/admin/status", async (req, res) => {
     // Try a quick check to see if we recovered
     let connectionError = null;
