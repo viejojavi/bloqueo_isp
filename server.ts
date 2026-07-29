@@ -346,40 +346,121 @@ function readLocalDB() {
   };
 }
 
+// Helper for Firestore REST API fallback when Admin SDK credentials are absent (e.g. on Vercel)
+function parseFirestoreRestValue(val: any): any {
+  if (!val) return null;
+  if ('stringValue' in val) return val.stringValue;
+  if ('integerValue' in val) return parseInt(val.integerValue, 10);
+  if ('doubleValue' in val) return parseFloat(val.doubleValue);
+  if ('booleanValue' in val) return val.booleanValue;
+  if ('nullValue' in val) return null;
+  if ('mapValue' in val) return parseFirestoreRestFields(val.mapValue?.fields);
+  if ('arrayValue' in val) {
+    return (val.arrayValue?.values || []).map((v: any) => parseFirestoreRestValue(v));
+  }
+  if ('timestampValue' in val) return val.timestampValue;
+  if ('referenceValue' in val) return val.referenceValue;
+  if ('geoPointValue' in val) return val.geoPointValue;
+  return null;
+}
+
+function parseFirestoreRestFields(fields: any): any {
+  if (!fields) return {};
+  const result: any = {};
+  for (const key of Object.keys(fields)) {
+    result[key] = parseFirestoreRestValue(fields[key]);
+  }
+  return result;
+}
+
+async function fetchFirestoreRestDoc(collectionName: string, docId: string) {
+  try {
+    const dbId = runtimeConfig.databaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${encodeURIComponent(dbId)}/documents/${collectionName}/${docId}?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json.fields) return null;
+    return parseFirestoreRestFields(json.fields);
+  } catch (e) {
+    console.warn(`[Firestore REST] Error fetching ${collectionName}/${docId}:`, e);
+    return null;
+  }
+}
+
+async function fetchFirestoreRestCollection(collectionName: string) {
+  try {
+    const dbId = runtimeConfig.databaseId || '(default)';
+    const url = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${encodeURIComponent(dbId)}/documents/${collectionName}?key=${firebaseConfig.apiKey}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json.documents) return [];
+    return json.documents.map((docItem: any) => {
+      const parts = docItem.name.split('/');
+      const id = parts[parts.length - 1];
+      const data = parseFirestoreRestFields(docItem.fields);
+      return { id, ...data };
+    });
+  } catch (e) {
+    console.warn(`[Firestore REST] Error fetching collection ${collectionName}:`, e);
+    return null;
+  }
+}
+
 async function getSystemConfig() {
   const fullLocalDb = readLocalDB();
   const localConfig = fullLocalDb.systemConfig || initialSystemConfig;
-  if (!isFirestoreAvailable || !db) return localConfig;
-  try {
-    const fetchDocPromise = db.collection('settings').doc('global').get();
-    const configDoc = await withTimeout<admin.firestore.DocumentSnapshot | null>(
-      fetchDocPromise,
-      2500, // 2.5 seconds timeout limit
-      null
-    );
+  
+  if (isFirestoreAvailable && db) {
+    try {
+      const fetchDocPromise = db.collection('settings').doc('global').get();
+      const configDoc = await withTimeout<admin.firestore.DocumentSnapshot | null>(
+        fetchDocPromise,
+        2500, // 2.5 seconds timeout limit
+        null
+      );
 
-    if (configDoc && configDoc.exists) {
-        const dbConfig = configDoc.data() || {};
-        const configToReturn = { ...localConfig, ...dbConfig };
-        if (configToReturn.protectedFiles && localConfig.protectedFiles) {
-            configToReturn.protectedFiles = configToReturn.protectedFiles.map((f: any) => {
-                const localF = localConfig.protectedFiles.find((lf: any) => lf.id === f.id);
-                return { ...f, content: localF?.content || "" };
-            });
-        }
-        
-        safeWriteDB({
-          ...fullLocalDb,
-          systemConfig: configToReturn
-        });
+      if (configDoc && configDoc.exists) {
+          const dbConfig = configDoc.data() || {};
+          const configToReturn = { ...localConfig, ...dbConfig };
+          if (configToReturn.protectedFiles && localConfig.protectedFiles) {
+              configToReturn.protectedFiles = configToReturn.protectedFiles.map((f: any) => {
+                  const localF = localConfig.protectedFiles.find((lf: any) => lf.id === f.id);
+                  return { ...f, content: localF?.content || "" };
+              });
+          }
+          
+          safeWriteDB({
+            ...fullLocalDb,
+            systemConfig: configToReturn
+          });
 
-        return configToReturn;
+          return configToReturn;
+      }
+    } catch (e) {
+      console.warn("[Firebase Admin] Error fetching system config, trying REST fallback", e);
     }
-    return localConfig;
-  } catch (e) {
-    console.warn("[Firebase] Error fetching system config, using local fallback", e);
-    return localConfig;
   }
+
+  // REST API Fallback (useful on Vercel without Admin SDK credentials)
+  try {
+    const restConfig = await fetchFirestoreRestDoc('settings', 'global');
+    if (restConfig) {
+      const configToReturn = { ...localConfig, ...restConfig };
+      if (configToReturn.protectedFiles && localConfig.protectedFiles) {
+        configToReturn.protectedFiles = configToReturn.protectedFiles.map((f: any) => {
+          const localF = localConfig.protectedFiles.find((lf: any) => lf.id === f.id);
+          return { ...f, content: localF?.content || "" };
+        });
+      }
+      return configToReturn;
+    }
+  } catch (e) {
+    console.warn("[Firestore REST] Config fallback failed", e);
+  }
+
+  return localConfig;
 }
 
 let cachedIsps: ISPInfo[] | null = null;
@@ -387,40 +468,50 @@ let lastCacheUpdate = 0;
 const CACHE_TTL = 30 * 1000; // 30 seconds
 
 async function getIsps() {
-  if (!isFirestoreAvailable || !db) {
-    return readLocalDB().ispDatabase;
-  }
   const now = Date.now();
   if (cachedIsps && (now - lastCacheUpdate < CACHE_TTL)) {
     return cachedIsps;
   }
+
+  if (isFirestoreAvailable && db) {
+    try {
+      const fetchIspsPromise = db.collection('isps').get();
+      const ispsSnap = await withTimeout<admin.firestore.QuerySnapshot | null>(
+        fetchIspsPromise,
+        2500, // 2.5 seconds timeout limit
+        null
+      );
+
+      if (ispsSnap) {
+        cachedIsps = ispsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ISPInfo));
+        lastCacheUpdate = now;
+        
+        const fullLocalDb = readLocalDB();
+        safeWriteDB({
+          ...fullLocalDb,
+          ispDatabase: cachedIsps
+        });
+
+        return cachedIsps;
+      }
+    } catch (e) {
+      console.warn("[Firebase Admin] Error fetching ISPs, trying REST fallback", e);
+    }
+  }
+
+  // REST API Fallback (useful on Vercel without Admin SDK credentials)
   try {
-    const fetchIspsPromise = db.collection('isps').get();
-    const ispsSnap = await withTimeout<admin.firestore.QuerySnapshot | null>(
-      fetchIspsPromise,
-      2500, // 2.5 seconds timeout limit
-      null
-    );
-
-    if (ispsSnap) {
-      cachedIsps = ispsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ISPInfo));
+    const restIsps = await fetchFirestoreRestCollection('isps');
+    if (restIsps && restIsps.length > 0) {
+      cachedIsps = restIsps as ISPInfo[];
       lastCacheUpdate = now;
-      
-      const fullLocalDb = readLocalDB();
-      safeWriteDB({
-        ...fullLocalDb,
-        ispDatabase: cachedIsps
-      });
-
       return cachedIsps;
-    } else {
-      console.warn("[Firebase] ISPs fetch timed out. Using local database.");
-      return readLocalDB().ispDatabase;
     }
   } catch (e) {
-    console.warn("[Firebase] Error fetching ISPs, falling back to local", e);
-    return readLocalDB().ispDatabase;
+    console.warn("[Firestore REST] ISPs fallback failed", e);
   }
+
+  return readLocalDB().ispDatabase;
 }
 
 const app = express();
@@ -570,7 +661,7 @@ app.use(express.json({ limit: '10mb' }));
   app.get("/api/admin/validate-db", async (req, res) => {
     const startTime = Date.now();
     let isCloudOk = false;
-    let latencyMs = 0;
+    let connectionType = 'none';
     let details = "";
 
     try {
@@ -578,24 +669,39 @@ app.use(express.json({ limit: '10mb' }));
         const testRef = db.collection('test').doc('connection');
         await Promise.race([
           testRef.get(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout de prueba de conexión (>3s)")), 3000))
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout Admin SDK (>3s)")), 3000))
         ]);
         isCloudOk = true;
-        latencyMs = Date.now() - startTime;
-        details = "Conexión a Firestore verificada correctamente.";
-      } else {
-        details = "Firestore no disponible o no configurado. Operando con almacenamiento de respaldo local JSON.";
+        connectionType = 'admin_sdk';
+        details = "Conexión Firebase Admin SDK verificada correctamente.";
       }
     } catch (err: any) {
-      isCloudOk = false;
-      details = `Error al conectar con Firestore: ${err.message}. Operando en modo local seguro.`;
+      console.warn("[Admin SDK] Validation check failed, testing REST API fallback...", err?.message || err);
+    }
+
+    if (!isCloudOk) {
+      try {
+        const restDoc = await fetchFirestoreRestDoc('test', 'connection');
+        if (restDoc !== null) {
+          isCloudOk = true;
+          connectionType = 'rest_api';
+          details = "Conexión Firestore REST API verificada correctamente.";
+        }
+      } catch (err: any) {
+        details = `Error en Firestore REST: ${err.message}`;
+      }
+    }
+
+    if (!isCloudOk && !details) {
+      details = "Firestore no disponible o no configurado. Operando con almacenamiento de respaldo local JSON.";
     }
 
     res.json({
       ok: true,
       cloudConnected: isCloudOk,
-      mode: isCloudOk ? 'cloud' : 'local',
-      latencyMs: isCloudOk ? latencyMs : Date.now() - startTime,
+      mode: isCloudOk ? (connectionType === 'admin_sdk' ? 'cloud_admin' : 'cloud_rest') : 'local',
+      connectionType,
+      latencyMs: Date.now() - startTime,
       databaseId: runtimeConfig.databaseId,
       timestamp: new Date().toISOString(),
       details
