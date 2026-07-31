@@ -893,11 +893,13 @@ function AdminPanel({
 
     const unsubIsps = onSnapshot(collection(getDb(), 'isps'), (snapshot) => {
       const ispList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ISPInfo));
-      setIsps(ispList);
+      if (ispList && ispList.length > 0) {
+        setIsps(ispList);
+      }
       setLoading(false);
     }, (err) => {
       setLoading(false);
-      handleFirestoreError(err, OperationType.LIST, 'isps');
+      console.warn("[Firestore] onSnapshot(isps) falló, utilizando datos del servidor backend:", err?.message || err);
     });
 
     const unsubConfig = onSnapshot(doc(getDb(), 'settings', 'global'), (snapshot) => {
@@ -919,8 +921,7 @@ function AdminPanel({
       }
     }, (err) => {
       setLoading(false);
-      console.error("Firestore error in onSnapshot(settings/global):", err);
-      handleFirestoreError(err, OperationType.GET, 'settings/global');
+      console.warn("[Firestore] onSnapshot(settings/global) falló, utilizando datos del servidor backend:", err?.message || err);
     });
 
     // Heartbeat de monitoreo en tiempo real de la base de datos

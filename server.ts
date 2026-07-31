@@ -448,10 +448,10 @@ async function getSystemConfig() {
     }
   }
 
-  // REST API Fallback (useful on Vercel without Admin SDK credentials)
+  // REST API Fallback (works on Vercel without Admin SDK credentials)
   try {
     const restConfig = await fetchFirestoreRestDoc('settings', 'global');
-    if (restConfig) {
+    if (restConfig && Object.keys(restConfig).length > 0) {
       const configToReturn = { ...localConfig, ...restConfig };
       if (configToReturn.protectedFiles && localConfig.protectedFiles) {
         configToReturn.protectedFiles = configToReturn.protectedFiles.map((f: any) => {
@@ -470,13 +470,10 @@ async function getSystemConfig() {
 
 let cachedIsps: ISPInfo[] | null = null;
 let lastCacheUpdate = 0;
-const CACHE_TTL = 30 * 1000; // 30 seconds
+const CACHE_TTL = 15 * 1000; // 15 seconds
 
 async function getIsps() {
   const now = Date.now();
-  if (cachedIsps && (now - lastCacheUpdate < CACHE_TTL)) {
-    return cachedIsps;
-  }
 
   if (hasAdminCredentials && isFirestoreAvailable && db) {
     try {
@@ -504,7 +501,7 @@ async function getIsps() {
     }
   }
 
-  // REST API Fallback (useful on Vercel without Admin SDK credentials)
+  // REST API Fallback (works on Vercel without Admin SDK credentials)
   try {
     const restIsps = await fetchFirestoreRestCollection('isps');
     if (restIsps && restIsps.length > 0) {
@@ -514,6 +511,10 @@ async function getIsps() {
     }
   } catch (e) {
     console.warn("[Firestore REST] ISPs fallback failed", e);
+  }
+
+  if (cachedIsps && (now - lastCacheUpdate < CACHE_TTL)) {
+    return cachedIsps;
   }
 
   return readLocalDB().ispDatabase;
