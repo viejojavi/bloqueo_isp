@@ -984,29 +984,59 @@ function AdminPanel({
     try {
       // 1. Intentar servidor backend primero
       const res = await fetch(`/api/lookup-asn/${cleanAsn}`);
-      const data = await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        if (data.name && data.prefixes) {
+          const newIps = [...(editingIsp.ips || [])];
+          data.prefixes.forEach((p: string) => {
+            if (!newIps.includes(p)) newIps.push(p);
+          });
 
-      if (res.ok && data.name && data.prefixes) {
-        const newIps = [...(editingIsp.ips || [])];
-        data.prefixes.forEach((p: string) => {
-          if (!newIps.includes(p)) newIps.push(p);
-        });
-
-        setEditingIsp({
-          ...editingIsp,
-          asn: cleanAsn,
-          name: (editingIsp.name && editingIsp.name.trim() !== '') ? editingIsp.name : data.name,
-          ips: newIps
-        });
-        showToast(`Cargados ${data.prefixes.length} prefijos (${data.source || 'Nube'})`);
-        return;
+          setEditingIsp({
+            ...editingIsp,
+            asn: cleanAsn,
+            name: (editingIsp.name && editingIsp.name.trim() !== '') ? editingIsp.name : data.name,
+            ips: newIps
+          });
+          showToast(`Cargados ${data.prefixes.length} prefijos (${data.source || 'Nube'})`);
+          return;
+        }
+      }
+      throw new Error("Servidor backend no disponible");
+    } catch (err: any) {
+      console.warn("[ASN Lookup Frontend] Servidor backend no disponible, intentando RIPE Stat directo...", err?.message || err);
+      
+      // Fallback 1: Consulta directa desde navegador a RIPE Stat (soporta CORS)
+      try {
+        const [overviewRes, prefixesRes] = await Promise.all([
+          fetch(`https://stat.ripe.net/data/as-overview/data.json?resource=AS${cleanAsn}`),
+          fetch(`https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS${cleanAsn}`)
+        ]);
+        if (overviewRes.ok && prefixesRes.ok) {
+          const overviewData = await overviewRes.json();
+          const prefixesData = await prefixesRes.json();
+          if (overviewData.status === "ok" && prefixesData.status === "ok" && overviewData.data) {
+            const prefixes = (prefixesData.data?.prefixes || []).map((p: any) => p.prefix);
+            const name = overviewData.data.holder || `AS${cleanAsn}`;
+            const newIps = [...(editingIsp.ips || [])];
+            prefixes.forEach((p: string) => {
+              if (!newIps.includes(p)) newIps.push(p);
+            });
+            setEditingIsp({
+              ...editingIsp,
+              asn: cleanAsn,
+              name: (editingIsp.name && editingIsp.name.trim() !== '') ? editingIsp.name : name,
+              ips: newIps
+            });
+            showToast(`Cargados ${prefixes.length} prefijos (RIPE Stat directo)`);
+            return;
+          }
+        }
+      } catch (ripeErr) {
+        console.warn("[ASN Lookup Frontend] RIPE Stat directo falló, intentando BGPView...", ripeErr);
       }
 
-      // Si el backend devolvió error, probar directamente en el navegador a BGPView API
-      throw new Error(data.message || "Error consultando servidor backend");
-    } catch (err: any) {
-      console.warn("[ASN Lookup Frontend] Servidor secundario backend falló, intentando consulta directa desde navegador...", err.message);
-      
+      // Fallback 2: Consulta directa desde navegador a BGPView API
       try {
         const bgpRes = await fetch(`https://api.bgpview.io/asn/${cleanAsn}/prefixes`);
         if (bgpRes.ok) {
@@ -1040,11 +1070,11 @@ function AdminPanel({
             return;
           }
         }
-        showToast(`No se encontraron prefijos para el ASN ${cleanAsn}`);
       } catch (browserErr) {
         console.error("[ASN Lookup Frontend] Falló consulta directa desde navegador:", browserErr);
-        showToast("Error al obtener prefijos del ASN. Verifique la conexión.");
       }
+
+      showToast(`No se pudieron obtener prefijos para el ASN ${cleanAsn}. Ingrese las IPs manualmente.`);
     } finally {
       setLookupLoading(false);
     }
@@ -1062,31 +1092,38 @@ function AdminPanel({
   const handleDelete = async (id: string) => {
     setLoading(true);
     try {
-      // First try server (for local file sync)
       const res = await fetch(`/api/admin/isps/${id}`, { method: 'DELETE' });
-      const data = await res.json();
-      
-      // If server failed to sync to firestore, try direct
-      if (data.firestore === false) {
-        try {
-          await deleteDoc(doc(getDb(), 'isps', id));
-          showToast('Eliminado en Nube + Local');
-        } catch (e) {
-          showToast('Eliminado solo en Local (Error IAM)');
+      let data: any = {};
+      try { data = await res.json(); } catch (e) {}
+
+      if (res.ok && data.success) {
+        if (data.firestore === false) {
+          try {
+            await deleteDoc(doc(getDb(), 'isps', id));
+            showToast('Eliminado en Nube + Local');
+          } catch (e) {
+            showToast('Eliminado en servidor');
+          }
+        } else {
+          showToast('Operador eliminado');
         }
+        setIsps(prev => prev.filter(isp => isp.id !== id));
       } else {
-        showToast('Operador eliminado');
+        throw new Error("Servidor no respondió OK");
       }
-
-      // Update local state immediately to ensure UI reflects the change
-      setIsps(prev => prev.filter(isp => isp.id !== id));
-
+    } catch (err) {
+      console.warn("[Delete ISP] Servidor no disponible, intentando eliminación directa en Firestore...", err);
+      try {
+        await deleteDoc(doc(getDb(), 'isps', id));
+        setIsps(prev => prev.filter(isp => isp.id !== id));
+        showToast('Eliminado directamente en Firestore (Nube)');
+      } catch (fsErr) {
+        console.error("Error en Firestore directo:", fsErr);
+        showToast('Error al eliminar');
+      }
+    } finally {
       if (editingIsp?.id === id) setEditingIsp(null);
       setIspToDelete(null);
-    } catch (err) {
-      showToast('Error de conexión');
-      setIspToDelete(null);
-    } finally {
       setLoading(false);
     }
   };
@@ -1096,12 +1133,13 @@ function AdminPanel({
       setLoading(true);
       showToast('Iniciando sincronización...');
       
-      // 1. Try server side first (to reset local file backup)
-      const res = await fetch('/api/admin/reset-isps', { method: 'POST' });
-      const serverData = await res.json();
+      try {
+        await fetch('/api/admin/reset-isps', { method: 'POST' });
+      } catch (e) {
+        console.warn("[Seed] Servidor backend no disponible para reset local, continuando con Firestore directo...");
+      }
       
-      // 2. Always try browser-side seeding (works if user is logged in even if server has IAM issues)
-      showToast('Sincronizando con la nube...');
+      showToast('Sincronizando con la nube Firestore...');
       
       const initialIsps = [
         { id: "1", name: "Claro Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/4/4c/Claro.svg", ips: ["190.157.0.0/16", "186.28.0.0/16", "186.29.0.0/16", "2800:480::/32"], activationType: 'default', status: 'active' },
@@ -1133,9 +1171,10 @@ function AdminPanel({
 
       await batch.commit();
       
-      // Refresh status from server
-      const statusRes = await fetch('/api/admin/status');
-      if (statusRes.ok) setDbStatus(await statusRes.json());
+      try {
+        const statusRes = await fetch('/api/admin/status');
+        if (statusRes.ok) setDbStatus(await statusRes.json());
+      } catch (e) {}
       
       showToast('Base de datos sincronizada con éxito');
     } catch (err) {
@@ -1157,35 +1196,58 @@ function AdminPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingIsp)
       });
-      const resData = await res.json();
-      
-      if (res.ok) {
-        // If server couldn't write to firestore, try browser-side write
+      let resData: any = {};
+      try { resData = await res.json(); } catch (e) {}
+
+      if (res.ok && resData.success) {
         if (resData.firestore === false) {
           try {
             const dataToSave = {
               ...editingIsp,
-              id: editingIsp.id || resData.isp.id,
+              id: editingIsp.id || resData.isp?.id || Date.now().toString(),
               updatedAt: Timestamp.now()
             };
             await setDoc(doc(getDb(), 'isps', dataToSave.id), dataToSave, { merge: true });
             showToast('Guardado en Nube + Local');
           } catch (e) {
-            showToast('Guardado solo en Local (Error IAM)');
+            showToast('Guardado en servidor');
           }
         } else {
-          showToast('Operador guardado');
+          showToast('Operador guardado correctamente');
         }
         setEditingIsp(null);
-        // FORCE REFRESH FROM SERVER TO SYNC LOCAL CACHE
         setTimeout(() => {
-          fetch('/api/admin/isps').then(r => r.json()).then(list => setIsps(list || []));
+          fetch('/api/admin/isps').then(r => r.json()).then(list => setIsps(list || [])).catch(() => {});
         }, 500);
       } else {
-        showToast('Error al guardar');
+        throw new Error("Servidor backend devolvió error");
       }
     } catch (err) {
-      showToast('Error de conexión');
+      console.warn("[Save ISP] Servidor no disponible, realizando guardado directo en Firestore...", err);
+      try {
+        const targetId = editingIsp.id || Date.now().toString();
+        const dataToSave = {
+          ...editingIsp,
+          id: targetId,
+          updatedAt: Timestamp.now()
+        };
+        await setDoc(doc(getDb(), 'isps', targetId), dataToSave, { merge: true });
+        
+        setIsps(prev => {
+          const idx = prev.findIndex(i => i.id === targetId);
+          if (idx > -1) {
+            const copy = [...prev];
+            copy[idx] = { ...copy[idx], ...editingIsp, id: targetId };
+            return copy;
+          }
+          return [...prev, { ...editingIsp, id: targetId } as any];
+        });
+        showToast('Guardado directamente en Firestore (Nube)');
+        setEditingIsp(null);
+      } catch (fsErr) {
+        console.error("Error en Firestore directo:", fsErr);
+        showToast('Error al guardar el operador');
+      }
     } finally {
       setLookupLoading(false);
     }
@@ -1195,29 +1257,15 @@ function AdminPanel({
     e.preventDefault();
     setLoading(true);
     try {
-      showToast('Validando conexión de base de datos...');
-      try {
-        const valRes = await fetch('/api/admin/validate-db');
-        if (valRes.ok) {
-          const valData = await valRes.json();
-          if (valData.cloudConnected) {
-            console.log(`[DB Validation] Conexión activa. Latencia: ${valData.latencyMs}ms`);
-          } else {
-            console.warn('[DB Validation] Sin conexión Nube direct. Usando respaldo local.');
-          }
-        }
-      } catch (e) {
-        console.warn('[DB Validation] No se pudo verificar la conexión previa.');
-      }
-
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(systemConfig)
       });
-      const resData = await res.json();
+      let resData: any = {};
+      try { resData = await res.json(); } catch(e) {}
 
-      if (res.ok) {
+      if (res.ok && resData.success) {
         if (resData.firestore === false) {
           try {
             await setDoc(doc(getDb(), 'settings', 'global'), {
@@ -1226,21 +1274,31 @@ function AdminPanel({
             }, { merge: true });
             showToast('Configuración guardada (Nube + Local)');
           } catch (e) {
-            showToast('Guardado en local seguro (Error IAM Cloud)');
+            showToast('Guardado en servidor');
           }
         } else {
           showToast('Configuración sincronizada exitosamente');
         }
         setEditingConfig(false);
-        // FORCE REFRESH FROM SERVER
         setTimeout(() => {
-          fetch('/api/admin/settings').then(r => r.json()).then(conf => setSystemConfig(conf || { defaultName: '', defaultLogo: '', protectedFiles: [] }));
+          fetch('/api/admin/settings').then(r => r.json()).then(conf => setSystemConfig(conf || { defaultName: '', defaultLogo: '', protectedFiles: [] })).catch(() => {});
         }, 500);
       } else {
-        showToast('Error al guardar configuración');
+        throw new Error("Servidor no devolvió OK");
       }
     } catch (err) {
-      showToast('Error de conexión al servidor');
+      console.warn("[Save Settings] Servidor no disponible, realizando guardado directo en Firestore...", err);
+      try {
+        await setDoc(doc(getDb(), 'settings', 'global'), {
+          ...systemConfig,
+          updatedAt: Timestamp.now()
+        }, { merge: true });
+        showToast('Configuración guardada en Firestore (Nube)');
+        setEditingConfig(false);
+      } catch (fsErr) {
+        console.error("Error en Firestore directo:", fsErr);
+        showToast('Error al guardar configuración');
+      }
     } finally {
       setLoading(false);
     }
