@@ -132,25 +132,145 @@ export default function App() {
     checkDbStatus();
   }, []);
 
-  const fetchData = (retries = 3) => {
-    setLoading(true);
-    fetch('/api/detect-isp')
-      .then(res => {
-        if (!res.ok) throw new Error("Server not ready");
-        return res.json();
-      })
-      .then(json => {
-        setData(json);
-        setLoading(false);
-      })
-      .catch(err => {
-        if (retries > 0) {
-          setTimeout(() => fetchData(retries - 1), 1500);
-        } else {
-          console.error('Error detecting ISP:', err);
-          setLoading(false);
+  const clientDetectIsp = async (): Promise<DetectionResponse> => {
+    let firestoreIsps: ISPInfo[] = [];
+    let firestoreConfig: any = null;
+
+    try {
+      const ispsSnap = await getDocs(collection(getDb(), 'isps'));
+      firestoreIsps = ispsSnap.docs.map(d => ({ id: d.id, ...d.data() } as ISPInfo));
+    } catch (e) {
+      console.warn("[Client Detect] Error al obtener ISPs de Firestore:", e);
+    }
+
+    try {
+      const configSnap = await getDoc(doc(getDb(), 'settings', 'global'));
+      if (configSnap.exists()) {
+        firestoreConfig = configSnap.data();
+      }
+    } catch (e) {
+      console.warn("[Client Detect] Error al obtener Configuración de Firestore:", e);
+    }
+
+    const initialIsps: ISPInfo[] = [
+      { id: "1", name: "Claro Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/4/4c/Claro.svg", ips: ["190.157.0.0/16", "186.28.0.0/16", "186.29.0.0/16", "2800:480::/32"], activationType: 'default', status: 'active' },
+      { id: "2", name: "Movistar Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/a/a9/Movistar_logo.svg", ips: ["190.156.0.0/16", "181.137.0.0/16", "200.75.0.0/16", "2800:af::/32"], activationType: 'default', status: 'active' },
+      { id: "3", name: "Tigo Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/3/36/Logo_Tigo.svg", ips: ["181.134.0.0/16", "181.133.0.0/16", "181.129.0.0/16", "2800:1e0::/32"], activationType: 'default', status: 'active' },
+      { id: "4", name: "ETB", logo: "https://upload.wikimedia.org/wikipedia/commons/9/9c/Logo_etb.svg", ips: ["181.135.0.0/16", "181.56.0.0/16", "200.21.0.0/16", "2800:40::/32"], activationType: 'default', status: 'active' },
+      { id: "5", asn: "273120", name: "TICCOL COLOMBIA S.A.S.", logo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png", ips: [], activationType: 'default', status: 'active' }
+    ];
+
+    const initialConfig = {
+      defaultName: "TICCOL SAS",
+      defaultLogo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png",
+      protectedFiles: [
+        { id: "file1", title: "mintic.txt", content: "" },
+        { id: "file2", title: "coljuegos.txt", content: "" }
+      ]
+    };
+
+    if (firestoreIsps.length === 0 || !firestoreConfig) {
+      try {
+        const batch = writeBatch(getDb());
+        if (firestoreIsps.length === 0) {
+          initialIsps.forEach(isp => {
+            batch.set(doc(getDb(), 'isps', isp.id), { ...isp, createdAt: Timestamp.now(), updatedAt: Timestamp.now() });
+          });
+          firestoreIsps = initialIsps;
         }
+        if (!firestoreConfig) {
+          batch.set(doc(getDb(), 'settings', 'global'), { ...initialConfig, updatedAt: Timestamp.now() });
+          firestoreConfig = initialConfig;
+        }
+        await batch.commit();
+        console.log("[Client Seed] Firestore auto-poblado exitosamente desde el navegador.");
+      } catch (seedErr) {
+        console.warn("[Client Seed] Advertencia al auto-poblar Firestore:", seedErr);
+        if (firestoreIsps.length === 0) firestoreIsps = initialIsps;
+        if (!firestoreConfig) firestoreConfig = initialConfig;
+      }
+    }
+
+    let clientIp = '127.0.0.1';
+    try {
+      const ipRes = await fetch('https://api.ipify.org?format=json');
+      if (ipRes.ok) {
+        const ipData = await ipRes.json();
+        if (ipData.ip) clientIp = ipData.ip;
+      }
+    } catch (e) {
+      console.warn("No se pudo obtener IP pública:", e);
+    }
+
+    const defaultConfig = firestoreConfig || initialConfig;
+
+    let detectedIsp: any = {
+      id: "default",
+      name: defaultConfig.defaultName || "TICCOL SAS",
+      logo: defaultConfig.defaultLogo || "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png",
+      isDefault: true
+    };
+
+    for (const isp of firestoreIsps) {
+      if (isp.status !== 'active') continue;
+      const matches = (isp.ips || []).some(range => {
+        if (!range) return false;
+        if (range.includes('/')) {
+          const prefix = range.split('/')[0];
+          const base = prefix.split('.').slice(0, 2).join('.');
+          return clientIp.startsWith(base);
+        }
+        return clientIp.startsWith(range);
       });
+      if (matches) {
+        detectedIsp = { ...isp, isDefault: false };
+        break;
+      }
+    }
+
+    if (detectedIsp.isDefault) {
+      const ticcolIsp = firestoreIsps.find(i => i.id === '5' || i.name?.toUpperCase().includes('TICCOL'));
+      if (ticcolIsp) {
+        detectedIsp = { ...ticcolIsp, isDefault: false };
+      }
+    }
+
+    return { clientIp, isp: detectedIsp };
+  };
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/detect-isp');
+      if (res.ok) {
+        const json = await res.json();
+        if (json && json.isp) {
+          setData(json);
+          setLoading(false);
+          return;
+        }
+      }
+      throw new Error("API backend no responde OK");
+    } catch (err) {
+      console.warn("[ISP Detection] Backend API no disponible en Vercel, ejecutando detección directa desde cliente con Firestore...");
+      try {
+        const clientData = await clientDetectIsp();
+        setData(clientData);
+      } catch (fallbackErr) {
+        console.error("Error en detección directa:", fallbackErr);
+        setData({
+          clientIp: '127.0.0.1',
+          isp: {
+            id: '5',
+            name: 'TICCOL COLOMBIA S.A.S.',
+            logo: 'https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png',
+            isDefault: false
+          }
+        });
+      } finally {
+        setLoading(false);
+      }
+    }
   };
 
   useEffect(() => {
@@ -905,15 +1025,29 @@ function AdminPanel({
       const ispList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ISPInfo));
       if (ispList && ispList.length > 0) {
         setIsps(ispList);
+      } else {
+        console.log("[Admin] Firestore no tiene ISPs, creando datos iniciales...");
+        const initialIsps: ISPInfo[] = [
+          { id: "1", name: "Claro Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/4/4c/Claro.svg", ips: ["190.157.0.0/16", "186.28.0.0/16", "186.29.0.0/16", "2800:480::/32"], activationType: 'default', status: 'active' },
+          { id: "2", name: "Movistar Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/a/a9/Movistar_logo.svg", ips: ["190.156.0.0/16", "181.137.0.0/16", "200.75.0.0/16", "2800:af::/32"], activationType: 'default', status: 'active' },
+          { id: "3", name: "Tigo Colombia", logo: "https://upload.wikimedia.org/wikipedia/commons/3/36/Logo_Tigo.svg", ips: ["181.134.0.0/16", "181.133.0.0/16", "181.129.0.0/16", "2800:1e0::/32"], activationType: 'default', status: 'active' },
+          { id: "4", name: "ETB", logo: "https://upload.wikimedia.org/wikipedia/commons/9/9c/Logo_etb.svg", ips: ["181.135.0.0/16", "181.56.0.0/16", "200.21.0.0/16", "2800:40::/32"], activationType: 'default', status: 'active' },
+          { id: "5", asn: "273120", name: "TICCOL COLOMBIA S.A.S.", logo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png", ips: [], activationType: 'default', status: 'active' }
+        ];
+        setIsps(initialIsps);
+        const batch = writeBatch(getDb());
+        initialIsps.forEach(isp => {
+          batch.set(doc(getDb(), 'isps', isp.id), { ...isp, createdAt: Timestamp.now(), updatedAt: Timestamp.now() });
+        });
+        batch.commit().catch(e => console.warn("Error guardando ISPs por defecto:", e));
       }
       setLoading(false);
     }, (err) => {
       setLoading(false);
-      console.warn("[Firestore] onSnapshot(isps) falló, utilizando datos del servidor backend:", err?.message || err);
+      console.warn("[Firestore] onSnapshot(isps) falló:", err?.message || err);
     });
 
     const unsubConfig = onSnapshot(doc(getDb(), 'settings', 'global'), (snapshot) => {
-      console.log("Snapshot of settings/global exists:", snapshot.exists());
       if (snapshot.exists()) {
         const configData = snapshot.data();
         setSystemConfig((prev: any) => {
@@ -927,11 +1061,21 @@ function AdminPanel({
           return newData;
         });
       } else {
-        console.warn("Global settings document not found!");
+        console.log("[Admin] Firestore no tiene 'settings/global', creando configuración inicial...");
+        const initialConfig = {
+          defaultName: "TICCOL SAS",
+          defaultLogo: "https://ticcol.com/wp-content/uploads/2021/04/Logo-Ticcol-Colombia-S.A.S.png",
+          protectedFiles: [
+            { id: "file1", title: "mintic.txt", content: "" },
+            { id: "file2", title: "coljuegos.txt", content: "" }
+          ]
+        };
+        setSystemConfig(initialConfig);
+        setDoc(doc(getDb(), 'settings', 'global'), { ...initialConfig, updatedAt: Timestamp.now() }, { merge: true }).catch(e => console.warn(e));
       }
     }, (err) => {
       setLoading(false);
-      console.warn("[Firestore] onSnapshot(settings/global) falló, utilizando datos del servidor backend:", err?.message || err);
+      console.warn("[Firestore] onSnapshot(settings/global) falló:", err?.message || err);
     });
 
     // Heartbeat de monitoreo en tiempo real de la base de datos
