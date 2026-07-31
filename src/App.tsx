@@ -1,6 +1,7 @@
 import { useEffect, useState, FormEvent, ChangeEvent } from 'react';
 import { ShieldAlert, Info, Phone, MessageSquare, ExternalLink, Scale, OctagonAlert, Globe, Settings, Plus, Trash2, Edit2, X, Save, AlertTriangle, Search, Loader2, Upload, ChevronDown, MessageCircle, LogOut, Database, RefreshCw, CheckCircle2, Key } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import firebaseConfig from '../firebase-applet-config.json';
 import { auth, getDb, updateFirestoreDatabase, storage } from './lib/firebase';
 import { 
   signInWithPopup, 
@@ -98,7 +99,11 @@ export default function App() {
     try {
       const response = await fetch('/api/admin/status');
       const status = await response.json();
-      setDbStatus(status);
+      setDbStatus({
+        ...status,
+        projectId: status.projectId || firebaseConfig.projectId,
+        databaseId: status.databaseId || (firebaseConfig as any).firestoreDatabaseId
+      });
       
       // Update client-side firestore database if it differs from current status
       if (status.databaseId) {
@@ -109,7 +114,12 @@ export default function App() {
       // Fallback to basic frontend check
       try {
         await getDocFromServer(doc(getDb(), 'test', 'connection'));
-        setDbStatus({ firestore: true, mode: 'cloud' });
+        setDbStatus({ 
+          firestore: true, 
+          mode: 'cloud',
+          projectId: firebaseConfig.projectId,
+          databaseId: (firebaseConfig as any).firestoreDatabaseId
+        });
       } catch (e: any) {
         setDbStatus({ firestore: false, mode: 'local', error: e.message });
       }
@@ -1539,7 +1549,7 @@ function AdminPanel({
                 </p>
                 <p className={`text-[11px] font-medium ${dbStatus.firestore ? 'text-emerald-700' : 'text-amber-800'}`}>
                   {dbStatus.firestore 
-                    ? `Estado óptimo: Sincronizando con Firestore (${dbStatus.projectId})` 
+                    ? `Estado óptimo: Sincronizando con Firestore (${dbStatus.projectId || firebaseConfig.projectId || 'Nube Activa'})` 
                     : `Atención: El servidor opera en modo local por falta de permisos Cloud.`}
                 </p>
               </div>
