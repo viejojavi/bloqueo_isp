@@ -368,7 +368,7 @@ function DocumentsView({ detectionData, databaseId, onBack }: { detectionData: D
              if (prev && prev.length > 0) {
                  return newFiles.map((f: any) => {
                      const prevF = prev.find((pf: any) => pf.id === f.id);
-                     return { ...f, content: prevF?.content || f.content || '' };
+                     return { ...f, content: f.content || prevF?.content || '' };
                  });
              }
              return newFiles;
@@ -1478,7 +1478,13 @@ function AdminPanel({
       return;
     }
 
-    if (file.type !== 'text/plain') { alert('Solo se permiten archivos TXT'); return; }
+    const isTxtExtension = file.name.toLowerCase().endsWith('.txt');
+    const isTxtMime = !file.type || file.type.includes('text') || file.type === 'application/octet-stream';
+
+    if (!isTxtExtension && !isTxtMime) { 
+      alert('Solo se permiten archivos de texto plano (.txt)'); 
+      return; 
+    }
 
     setUploading(true);
     try {
@@ -1507,22 +1513,46 @@ function AdminPanel({
       }
       
       const newConfig = { ...systemConfig, protectedFiles: updatedFiles };
+
+      // 1. Intentar servidor backend
+      let savedServer = false;
+      try {
+        const res = await fetch('/api/admin/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newConfig)
+        });
+        if (res.ok) {
+          const resData = await res.json().catch(() => ({}));
+          if (resData.success) savedServer = true;
+        }
+      } catch (e) {
+        console.warn("[Protected File Upload] Backend no disponible, realizando guardado directo en Firestore...");
+      }
       
-      const res = await fetch('/api/admin/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newConfig)
-      });
-      
-      if (!res.ok) throw new Error("Fallo al guardar en el servidor");
+      // 2. Guardar en Firestore directamente
+      try {
+        await setDoc(doc(getDb(), 'settings', 'global'), {
+          ...newConfig,
+          updatedAt: Timestamp.now()
+        }, { merge: true });
+        showToast('Archivo guardado exitosamente en Firestore (Nube)');
+      } catch (fsErr) {
+        console.error("Error guardando archivo en Firestore:", fsErr);
+        if (savedServer) {
+          showToast('Archivo guardado en el servidor');
+        } else {
+          throw new Error("No se pudo guardar ni en servidor ni en Firestore");
+        }
+      }
       
       setSystemConfig(newConfig);
-      showToast('Archivo guardado exitosamente.');
     } catch (err) {
       console.error("File upload failed:", err);
       alert("Error al procesar el archivo: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setUploading(false);
+      if (e.target) e.target.value = '';
     }
   };
 
